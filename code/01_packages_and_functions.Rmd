@@ -1,0 +1,403 @@
+---
+title: "Packages and functions"
+output: html_notebook
+---
+
+# Packages
+
+*All* the packages needed for this project should be loaded here so they can be
+easily reloaded after a restart.
+
+```{r}
+# NB models
+# NOTE: MASS must be loaded before tidyverse otherwise it masks dplyr::select()
+library("MASS")
+# loading tidyverse loads ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr 
+# and forcats
+library("tidyverse")
+# date processing
+library("lubridate")
+# tidy model results
+library("broom")
+# access to the ST spatial library
+library("sf")
+# download Tiger Line data
+library("tigris")
+# download ACS data
+library("tidycensus")
+```
+
+
+# Includes
+
+```{r}
+# This one-line file assigns a string to the variable `census_api_key`
+source("census_api_key.R")
+```
+
+
+
+# Functions
+
+## Scale and remove attributes from result
+
+`scale()` returns a one-dimensional matrix with attributes, rather than a
+numeric vector. The resulting columns can be stored in a tibble, but cannot be
+used within `mutate()` commands. This function scales a variable and then
+converts the result to a numeric vector.
+
+```{r}
+scale_vector <- function(...) {
+	as.numeric(scale(...))
+}
+```
+
+## Add centroid co-ordinates as columns in an SF object
+
+```{r}
+add_centroid_coordinates <- function (data) {
+	
+	# check if the input data is an SF object
+	# any() is required here because sf objects have multiple classes, only one of
+	# which is matched on the next line
+	stopifnot(
+		any(class(data) == "sf"),
+		st_geometry_type(data)[1] %in% c("POLYGON", "MULTIPOLYGON")
+	)
+	
+	# calculate centroids and extract them as co-ordinates
+	coords <- data %>% st_centroid() %>% st_coordinates() %>% as_tibble()
+
+	# merge data and centroids
+	bind_cols(data, coords)
+	
+}
+```
+
+## Add column to SF object showing proportional overlap with another SF object
+
+```{r}
+add_overlap_area <- function (x, y) {
+	
+	# check if the input data is an SF object
+	# any() is required here because sf objects have multiple classes, only one of
+	# which is matched on the next line
+	stopifnot(
+		any(class(x) == "sf"),
+		st_geometry_type(x)[1] %in% c("POLYGON", "MULTIPOLYGON"),
+		any(class(y) == "sf"),
+		st_geometry_type(y)[1] %in% c("POLYGON", "MULTIPOLYGON"),
+		st_crs(x) == st_crs(y)
+	)
+	
+	# add temporary index for joining later on
+	x <- x %>% mutate(temp_index = 1:n())
+
+	# extract overlapping areas and add area column
+	overlap <- st_intersection(x, y) %>% 
+		mutate(area_overlap = units::drop_units(st_area(.))) %>% 
+		select(temp_index, area_overlap) %>% 
+		st_set_geometry(NULL)
+	
+	# join to existing data
+  # note this is not a spatial join
+	x <- x %>% 
+		mutate(area_existing = units::drop_units(st_area(.))) %>% 
+		left_join(overlap, by = c("temp_index")) %>% 
+		mutate(area_overlap = ifelse(is.na(area_overlap), 0, area_overlap))
+	
+	# calculate proportion of area that overlaps
+	x <- x %>% 
+		mutate(prop_overlap = area_overlap / area_existing) %>% 
+		select(-temp_index, -area_overlap, -area_existing)
+}
+```
+
+## Convert two date strings to a character vector of the dates between them
+
+```{r}
+day_seq <- function (x, y) {
+	
+	# check if inputs are in the correct format
+	stopifnot(
+		is.character(x),
+		is.character(y),
+		length(x) == 1,
+		length(y) == 1
+	)
+	
+	# produce vector of date strings between x and y
+	seq.Date(as.Date(x), as.Date(y), by = "days") %>% 
+		as.character()
+}
+```
+
+## Report the results of an ANOVA test *briefly*
+
+This function takes a list of models.
+
+```{r}
+anova_compact <- function (x) {
+	
+	# get the model summaries
+	model_summaries <- lapply(1:length(x), function (y) {
+		glance(x[[y]]) %>% 
+			mutate(model = names(x)[y])
+	})
+	
+	# conduct LR tests
+	for (i in 2:length(model_summaries)) {
+		model_summaries[[i]]$versus <- names(x)[i - 1]
+		model_summaries[[i]]$DF <- model_summaries[[i - 1]]$df.residual - 
+			model_summaries[[i]]$df.residual
+		model_summaries[[i]]$LR <- (1 - model_summaries[[i - 1]]$logLik * 2) - 
+			(1 - model_summaries[[i]]$logLik * 2)
+		model_summaries[[i]]$p <- 1 - pchisq(model_summaries[[i]]$LR,
+																				 model_summaries[[i]]$DF)
+	}
+	
+	model_summaries %>% 
+		bind_rows() %>% 
+		dplyr::select(model, versus, AIC, LR, DF, p)
+	
+}
+```
+
+## Report a negative binomial regression model
+
+```{r}
+report_nbreg <- function (x, title = NULL, ci = NA) {
+	
+	model_summary <- summary(x)
+	
+	# report model
+	cat("\n")
+	if (!is.null(title)) cat("\nMODEL: ", title)
+	cat("\nNegative binomial regression model with dispersion (theta) = ", 
+			sprintf("%.3f", model_summary$theta), "\n")
+	
+	# report overall significance of the model
+	cat("\nOverall model performance compared to an empty model\n")
+	anova_compact(list("empty" = update(x, . ~ 1), "current" = x)) %>% print()
+	
+	# report deviance residuals
+	cat("\nDeviance residuals\n")
+	summary(model_summary$deviance.resid) %>% 
+		tidy() %>% 
+		dplyr::select(-mean) %>% 
+		mutate_if(is.numeric, ~ sprintf("%.3f", .)) %>% 
+		print()
+	
+	# report the co-efficients
+	cat("\nCo-efficients\n")
+	coefs <- tidy(x)
+	if (is.numeric(ci) & ci > 0 & ci < 1) {
+		coefs <- coefs %>% cbind(confint_tidy(x))
+	}
+	coefs <- coefs %>% 
+		mutate(odds_ratio = exp(estimate)) %>% 
+		mutate_if(is.numeric, round, digits = 3) %>% 
+		select(variable = term, 
+					 coef = estimate, 
+					 odds_ratio,
+					 SE = std.error, 
+					 p = p.value)
+	print(coefs)
+
+	# summarise VIFs
+	vifs <- car::vif(x) %>% tidy()
+	if (max(vifs$x) >= 5) {
+		cat("\nWARNING: some variance inflation factors are 5 or greater:\n")
+		vifs %>% filter(x >= 5) %>% print()
+	} else {
+		cat("\nAll variance inflation factors are less than 5\n")
+	}
+}
+```
+
+# Identify outliers
+
+This function takes a regression model and returns a tibble showing which rows
+are potentially problematic.
+
+```{r}
+identify_outliers <- function (x) {
+	
+	# identify outliers
+	# outlierTest() returns a non-standard list format, with the row IDs of 
+	# problematic rows contained in the names attribute of each element.
+	outlier_rows <- car::outlierTest(x)$p %>% 
+		names() %>% 
+		as.numeric() %>% 
+		as_tibble() %>% 
+		mutate(problem = "outlier")
+	
+	# identify influential cases
+	# influencePlot() returns a data frame with row IDs in the row names
+	influence_rows <- car::influencePlot(x) %>% 
+		row.names() %>% 
+		as.numeric() %>% 
+		as_tibble() %>% 
+		mutate(problem = "influential")
+	
+	# merge tibbles and identify rows that are both outliers and influential
+	rbind(outlier_rows, influence_rows) %>% 
+		rename(row = value) %>% 
+		group_by(row) %>% 
+		summarise(problem = first(problem), n = n()) %>% 
+		mutate(problem = ifelse(n > 1, "influential outlier", problem)) %>% 
+		select(-n) %>% 
+		arrange(row)
+	
+}
+```
+
+# Compare co-efficients across models
+
+This function uses the z-score test [outlined by Andrew Wheeler](https://andrewpwheeler.wordpress.com/2016/10/19/testing-the-equality-of-two-regression-coefficients/).
+It takes two regression models, extracts the co-efficients and returns a tibble
+of z-scores and associated p-values.
+
+```{r}
+compare_coef <- function (mod1, mod2, title = NULL) {
+	
+	# summarise models
+	cat("\n\n")
+	if (!is.null(title)) cat("COMPARISON: ", title, "\n")
+	cat("Model 1: ", as.character(formula(mod1)), "\n")
+	cat("Model 2: ", as.character(formula(mod2)), "\n")
+	
+	# produce tidy tibbles of model co-efficients
+	mod1 <- tidy(mod1) %>% mutate(IRR = exp(estimate))
+	mod2 <- tidy(mod2) %>% mutate(IRR = exp(estimate))
+	
+	# bind co-efficients and 
+	full_join(mod1, mod2, by = c("term"), suffix = c("_m1", "_m2")) %>% 
+		mutate(
+			z = abs((estimate_m1 - estimate_m2) / 
+								sqrt(std.error_m1 ^ 2 + std.error_m2 ^ 2)),
+			z_p = 1 - pnorm(z)
+		) %>% 
+		mutate_if(is.numeric, round, digits = 3) %>% 
+		select(variable = term, 
+					 IRR_m1,
+					 p_m1 = p.value_m1, 
+					 IRR_m2,
+					 p_m2 = p.value_m2, 
+					 z, 
+					 z_p)
+	
+}
+```
+
+
+# Plot confidence intervals
+
+```{r}
+confint_plot <- function (
+	x, # regression model that can be processed by tidy()
+	x_lim = c(NA, NA), # manually set plot limits
+	fixed_x = FALSE, 
+	legend_pos = NA,
+	term_order = NA,
+	title = NA
+) {
+	
+	# create a named vector of colours to represent significance
+	sig_col <- c("#999999", "#000000")
+	names(sig_col) <- c("n.s.", "p < 0.05")
+	
+	# produce tibble of estimates and confidence intervals
+	d <- tidy(x) %>% 
+		cbind(confint_tidy(x)) %>% 
+		# remove the intercept because it isn't useful in the context of odds ratios
+		filter(term != "(Intercept)") %>% 
+		# remove columns that aren't needed
+		select(-std.error, -statistic) %>% 
+		# exponentiate estimates (and associated CIs) into odds ratios
+		mutate_at(vars(one_of("estimate", "conf.low", "conf.high")), exp) %>% 
+		mutate(
+  		# replace term names with labels
+			label = modify(term, function (y) {
+				label <- var_labels$label[var_labels$name == y]
+				if (length(label) < 1) label <- paste0("[", y, "]")
+				label
+			}),
+			# calculate end of leader lines
+			position = ifelse(estimate < 1, conf.high, conf.low),
+			# determine alignment of term labels
+			align = ifelse(estimate < 1, "left", "right"),
+			# determine significance of each term
+			significance = ifelse(p.value < 0.05, "p < 0.05", "n.s.")
+		) %>% 
+		mutate(
+			# add a space at the end of the label closest to the centre line
+			# this is necessary because the geom_text() nudge parameter only takes a
+			# single value for the whole chart
+			label = ifelse(estimate < 1, paste0("  ", label), paste0(label, "  "))
+		)
+	
+	# if necessary, re-order terms
+	if (sum(!is.na(term_order)) > 0) {
+		row_order <- tibble(term = term_order, order = 1:length(term_order))
+		d <- d %>% 
+			left_join(row_order, by = c("term")) %>% 
+			arrange(order) %>% 
+			select(-order)
+	}
+	
+	# if necessary, fix limits to be equally distant from 1
+	if (fixed_x == TRUE & sum(is.na(x_lim)) == length(x_lim)) {
+		bigger_lim <- max(max(d$conf.high), max(1 / d$conf.low))
+		x_lim <- c(1 / bigger_lim, bigger_lim)
+	}
+	
+	# plot confidence intervals
+	p <- ggplot(
+		data = d, 
+		mapping = aes(x = estimate, y = term, colour = significance)
+	) +
+		geom_segment(aes(x = position, xend = 1, y = term, yend = term), 
+								 colour = "#999999", linetype = 2) +
+		geom_vline(xintercept = 1) +
+		geom_point(aes(x = estimate), size = 3, colour = "#FFFFFF") +
+		geom_segment(aes(x = conf.low, xend = conf.high, y = term, yend = term)) +
+		geom_point(aes(x = estimate), size = 2) +
+		geom_text(aes(x = 1, label = label, hjust = align), 
+							colour = "#666666", 
+							# for the origin of this magic number (err, ratio), see
+							# https://stackoverflow.com/questions/17311917/ggplot2-the-unit-of-size
+							size = 10 / (1/0.352777778)) +
+		scale_x_log10(
+			name = "odds ratio (log scale)",
+			limits = x_lim,
+			breaks = function (x) pretty(x, n = 5)
+		) +
+		scale_y_discrete(name = NULL, limits = rev(d$term)) +
+		scale_colour_manual(values = sig_col, drop = FALSE) +
+		theme_my
+	
+	if (length(legend_pos) == 2 & sum(!is.na(legend_pos)) == 2) {
+	  if (!all(legend_pos %in% c(0, 1)) | length(legend_pos) != 2) {
+	  	stop("legend_pos must have two elements and all elements must be 0 or 1")
+  	}
+		p <- p + theme(
+    	legend.position = legend_pos,
+    	legend.justification = legend_pos
+		)
+	}
+	
+	# add title
+	if (!is.na(title)) {
+	  p <- p + annotate("label", x_lim[1], Inf, hjust = 0, vjust = 1, 
+	  									label.size= NA, label = title)
+	}
+
+	# return plot
+	p
+
+}
+
+```
+
+

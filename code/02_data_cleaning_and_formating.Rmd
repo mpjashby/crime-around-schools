@@ -1,0 +1,1046 @@
+---
+title: "Data cleaning and formatting"
+output: html_notebook
+---
+
+
+# Data sources
+
+This project needs data on:
+
+  * crime from [CODE](https://osf.io/zyaqn/),
+  * schools from the National Center for Education Statistics [Common Core of 
+    Data](https://nces.ed.gov/ccd/pubschuniv.asp) (CCD).
+
+The output from this file should be a table in which each row represents a 
+census block group that is within a CODE city and has a population greater than 
+zero. Each case should include counts of crime in the area as well as counts of 
+schools and school students of different ages. Spatially lagged counts of crime 
+are also required.
+
+
+# Pre-processing
+
+No pre-processing was requried for the data for this project. All processing of 
+data before analysis is done in this file.
+
+
+# Set up basic variables
+
+```{r}
+# Create vector of counties containing CODE cities
+code_counties <- c(
+	"17031", # Cook County, IL
+	"26163", # Wayne County, MI
+	"48121", # Denton County, TX
+	"48439", # Tarrant County, TX
+	"06037", # Los Angeles County, CA
+	"21111", # Jefferson County, KY
+	"36005", # Bronx County, NY
+	"36047", # Kings County, NY
+	"36061", # New York County, NY
+	"36081", # Queens County, NY
+	"36085", # Richmond County, NY
+	"06075", # San Francisco County, CA
+	"51810" # Virginia Beach County, VA
+)
+# Create list of identifiers for CODE cities
+city_data <- list(
+	'Chicago' = list('FIPS_code' = '17', 'name' = 'Chicago', 'abbr' = 'IL'),
+	'Detroit' = list('FIPS_code' = '26', 'name' = 'Detroit', 'abbr' = 'MI'),
+	'FW' = list('FIPS_code' = '48', 'name' = 'Fort Worth', 'abbr' = 'TX'),
+	'LA' = list('FIPS_code' = '06', 'name' = 'Los Angeles', 'abbr' = 'CA'),
+	'Louisville' = list('FIPS_code' = '21', 'name' = 'Louisville', 'abbr' = 'KY'),
+	'NYC' = list('FIPS_code' = '36', 'name' = 'New York', 'abbr' = 'NY'),
+	'SF' = list('FIPS_code' = '06', 'name' = 'San Francisco', 'abbr' = 'CA')
+)
+```
+
+
+# Crime data
+
+We need five years of crime data from the CODE database. Only some columns from 
+the core data are needed, but are otherwise in the correct format already so can 
+be immediately passed through to a single CSV output file.
+
+```{r}
+if (!file.exists("../original_data/crime_data.csv.gz")) {
+	
+	crime_data <- dir("../original_data", pattern = "^large_city_crime_data_core_", 
+										full.names = TRUE) %>% 
+		# explicit column typing is required because some columns are mostly digits
+		# but have a few rows with characters and so they aren't caught by the
+		# column-typing algorithm
+		map(read_csv, col_types = cols(
+			.default = col_character(),
+			uid = col_integer(),
+			date_single = col_datetime(format = ""),
+			date_start = col_datetime(format = ""),
+			date_end = col_datetime(format = ""),
+			multiple_dates = col_logical(),
+			longitude = col_double(),
+			latitude = col_double(),
+			fips_state = col_integer(),
+			block_group = col_integer(),
+			block = col_integer()
+		)) %>% 
+		reduce(rbind) %>% 
+		# we need five years of data so NO and VB crimes should be excluded
+		filter(!city_name %in% c("New Orleans", "Virginia Beach")) %>% 
+		select(
+			uid, 
+			city_name, 
+			offense_code, 
+			offense_type, 
+			offense_group, 
+			offense_against, 
+			date_single, 
+			longitude, 
+			latitude, 
+			state = fips_state,
+			county = fips_county, 
+			census_tract = tract, 
+			census_blockgroup = block_group,
+			census_block = block
+		)
+	
+	# store a copy of the crime data
+	crime_data %>% 
+		write_csv("../original_data/crime_data.csv.gz", na = "")
+	
+	# zip the resulting file because it's very large (>800MB)
+	# zip(zipfile = "../analysis_data/crime_data.csv.zip", 
+	#       files = c("../analysis_data/crime_data.csv"))
+	# file.remove("../analysis_data/crime_data.csv")
+	
+} else {
+	
+	crime_data <- read_csv("../original_data/crime_data.csv.gz")
+	
+}
+
+# add whether offence occurred (approximately) during school hours
+crime_data <- crime_data %>% mutate(
+	school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 16, 
+											 TRUE, FALSE)
+)
+```
+
+
+# Identify term-time offences
+
+We need to know the dates on which schools were closed in each city in each 
+year. Data are from the National Council on Teacher Quality [Teacher Contracts 
+Database](https://www.nctq.org/contract-database/).
+
+```{r}
+school_holidays <- list(
+	"Chicago" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-01-27", 
+		"2012-02-03", "2012-02-13", "2012-02-20", "2012-03-05", 
+		day_seq("2012-04-02", "2012-04-06"), "2012-04-13", "2012-04-28", 
+		"2012-05-28", day_seq("2012-06-14", "2012-09-03"), "2012-10-12", 
+		"2012-11-02", "2012-11-12", "2012-11-22", "2012-11-23", 
+		day_seq("2012-12-24", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", "2013-01-25", 
+		"2013-02-12", "2013-02-18", "2013-03-29", 
+		day_seq("2013-04-01", "2013-04-05"), "2013-05-27",
+		day_seq("2013-06-17", "2013-08-23"), "2013-09-02", "2013-10-14", 
+		"2013-11-01", "2013-11-11", "2013-11-12", 
+		day_seq("2013-11-27", "2013-11-29"), day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-20", "2014-01-24",
+		"2014-02-12", "2014-03-28", "2014-04-07", 
+		day_seq("2014-04-14", "2014-04-18"), "2014-05-26",
+		day_seq("2014-06-11", "2014-09-01"), "2014-10-13", "2014-11-07", 
+		"2014-11-11", day_seq("2014-11-26", "2014-11-28"), 
+		day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		"2015-01-01", "2015-01-02", "2015-01-19", "2015-01-30", "2015-02-16", 
+		day_seq("2015-04-3", "2015-04-10"), "2015-05-25", 
+		day_seq("2015-06-17", "2015-09-07"), "2015-10-12", "2015-11-11", 
+		"2015-11-13", day_seq("2015-11-25", "2015-11-27"), 
+		day_seq("2015-12-21", "2015-12-31"),
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-05", "2016-02-15", "2016-04-08",
+		day_seq("2016-04-18", "2016-04-22"), "2016-05-30",
+		day_seq("2016-06-22", "2016-09-05"), "2016-10-10", "2016-11-04", 
+		"2016-11-11", day_seq("2016-11-23", "2016-11-25"), 
+		day_seq("2016-12-26", "2016-12-31")
+	),
+	"Detroit" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", 
+		day_seq("2012-01-20", "2012-01-24"), "2012-03-06", "2012-03-07", 
+		"2012-03-20", "2012-03-21", day_seq("2012-04-06", "2012-04-13"), 
+		"2012-05-28", day_seq("2012-06-15", "2012-09-03"), "2012-11-06", 
+		"2012-11-22", "2012-11-23", day_seq("2012-12-24", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", 
+		day_seq("2013-02-18", "2013-02-22"), "2013-03-05", "2013-03-06", 
+		"2013-03-19", "2013-03-20", day_seq("2013-03-29", "2013-04-05"),
+		"2013-05-27", day_seq("2013-06-15", "2013-09-02"), "2013-11-05",
+		"2013-11-28", "2013-11-29", day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-20", 
+		day_seq("2014-02-17", "2014-02-21"), "2014-03-04", "2014-03-05", 
+		"2014-03-18", "2014-03-19", day_seq("2014-04-18", "2014-04-25"), 
+		"2014-05-26", day_seq("2014-06-14", "2014-09-01"), "2014-11-04", 
+		"2014-11-27", "2014-11-28", day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		"2015-01-01", "2015-01-02", "2015-01-19",  
+		day_seq("2015-02-16", "2015-02-20"), "2015-03-03", "2015-03-04", 
+		"2015-03-17", "2015-03-18", day_seq("2015-04-03", "2015-04-10"), 
+		"2015-05-25", day_seq("2015-06-12", "2015-09-07"), 
+		"2015-11-03", "2015-11-26", "2015-11-27", 
+		day_seq("2015-12-21", "2015-12-31"),
+		# 2016
+		"2016-01-01", "2016-01-18", day_seq("2016-02-15", "2016-02-19"), 
+		day_seq("2016-03-25", "2016-04-01"), "2016-04-12", "2016-04-13", 
+		"2016-04-26", "2016-05-30", day_seq("2016-06-18", "2016-09-05"), 
+		"2016-11-08", day_seq("2016-11-23", "2016-11-25"), 
+		day_seq("2016-12-26", "2016-12-31")
+	),
+	"Fort Worth" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-02"), "2012-01-13", "2012-01-16", 
+		"2012-02-03", day_seq("2012-03-12", "2012-03-16"), "2012-04-06", 
+		"2012-05-28", day_seq("2012-06-02", "2012-08-26"), "2012-09-03", 
+		"2012-09-14", "2012-10-08", "2012-11-05", 
+		day_seq("2012-11-19", "2012-11-23"),
+		day_seq("2012-12-24", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-07"), "2013-01-18", "2013-01-21", 
+		"2013-02-01", day_seq("2013-03-11", "2013-03-15"), "2013-03-29", 
+		"2013-05-27", day_seq("2013-06-08", "2013-08-25"), "2013-09-02", 
+		"2013-10-14", "2013-11-11", day_seq("2013-11-25", "2013-11-29"), 
+		day_seq("2013-12-23", "2013-12-31"), 
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-17", "2014-01-20", 
+		"2014-02-07", day_seq("2014-03-10", "2014-03-14"), "2014-04-18", 
+		"2014-05-26", day_seq("2014-06-07", "2014-08-22"), "2014-09-01", 
+		"2014-10-13", "2014-11-10", day_seq("2014-11-24", "2014-11-28"), 
+		day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-02"), "2015-01-16", "2015-01-19", 
+		"2015-02-06", day_seq("2015-03-09", "2015-03-13"), "2015-04-03", 
+		"2015-05-25", day_seq("2015-06-08", "2015-08-21"), "2015-09-07", 
+		"2015-10-12", day_seq("2015-11-23", "2015-11-27"), 
+		day_seq("2015-12-21", "2015-12-31"),
+		# 2016
+		day_seq("2016-01-01", "2016-01-04"), "2016-01-18", "2016-02-05",
+		day_seq("2016-03-14", "2016-03-18"), "2016-03-25", "2016-05-30",
+		day_seq("2016-06-03", "2016-08-19"), "2016-09-05", "2016-10-10",
+		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-23", "2016-12-31")
+	),
+	"Los Angeles" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-02-20", 
+		day_seq("2012-03-30", "2012-04-06"), "2012-05-28", 
+		day_seq("2012-06-25", "2012-08-13"), day_seq("2012-08-31", "2012-09-03"),
+		"2012-09-17", "2012-09-26", "2012-11-12", 
+		day_seq("2012-11-22", "2012-11-23"), day_seq("2012-12-17", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-04"), "2013-02-21", "2013-02-18", 
+		day_seq("2013-03-25", "2013-04-01"), "2013-05-27", 
+		day_seq("2013-06-05", "2013-08-12"), day_seq("2013-08-30", "2013-09-02"),
+		"2013-09-05", "2013-11-11", day_seq("2013-11-25", "2013-11-29"),
+		day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-10"), "2014-01-20", "2014-02-17",
+		"2014-03-31", day_seq("2014-04-14", "2014-04-18"), "2014-05-26",
+		day_seq("2014-06-06", "2014-08-11"), day_seq("2014-08-29", "2014-09-01"),
+		"2014-09-25", "2014-11-11", day_seq("2014-11-24", "2014-11-28"),
+		day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-09"), "2015-01-19", "2015-02-16",
+		day_seq("2015-03-30", "2015-04-06"), "2015-05-25", 
+		day_seq("2015-06-05", "2015-08-17"), day_seq("2015-09-04", "2015-09-07"),
+		"2015-09-14", "2015-09-23", "2015-11-11", 
+		day_seq("2015-11-23", "2015-11-27"), day_seq("2015-12-21", "2015-12-31"),
+		# 2016
+		day_seq("2016-01-01", "2016-01-08"), "2016-01-18", "2016-01-15", 
+		day_seq("2016-03-21", "2016-03-28"), "2016-05-30", 
+		day_seq("2016-06-13", "2016-08-15"), day_seq("2016-09-02", "2016-09-05"),
+		"2016-10-03", "2016-10-12", "2016-11-11", 
+		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+	),
+	"Louisville" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-02-13", 
+		"2012-03-02", day_seq("2012-04-09", "2012-04-13"), "2012-05-04",
+		"2012-05-22", day_seq("2012-05-28", "2012-08-20"), "2012-09-03",
+		"2012-10-05", "2012-10-08", "2012-11-05", "2012-11-06", 
+		day_seq("2012-11-21", "2012-11-23"), day_seq("2012-12-21", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", 
+		day_seq("2013-02-25", "2013-03-01"), day_seq("2013-04-01", "2013-04-05"),
+		"2013-05-03", "2013-05-27", day_seq("2013-06-06", "2013-08-19"),
+		"2013-09-02", day_seq("2013-10-04", "2013-10-08"), "2013-11-11",
+		day_seq("2013-11-27", "2013-11-29"), day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-20", 
+		day_seq("2014-02-24", "2014-02-28"), day_seq("2014-03-31", "2014-04-04"),
+		"2014-05-02", "2014-05-20", "2014-05-26", 
+		day_seq("2014-06-05", "2014-08-12"), "2014-09-01", "2014-10-03", 
+		"2014-10-06", "2014-10-07", "2014-11-03", "2014-11-04", 
+		day_seq("2014-11-26", "2014-11-28"), day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-02"), "2015-01-19", "2015-02-27",
+		"2015-03-09", day_seq("2015-04-02", "2015-04-10"), "2015-05-01",
+		"2015-05-19", "2015-05-25", day_seq("2015-05-29", "2015-08-11"),
+		"2015-09-07", day_seq("2015-10-02", "2015-10-06"), "2015-11-02", 
+		"2015-11-03", day_seq("2015-11-25", "2015-11-27"),
+		day_seq("2015-12-21", "2015-12-31"), 
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-29", "2016-03-14", 
+		day_seq("2016-03-31", "2016-04-08"), "2016-05-06", "2016-05-17",
+		day_seq("2016-05-26", "2016-08-09"), "2016-09-05", 
+		day_seq("2016-09-30", "2016-10-04"), "2016-11-07", "2016-11-08",
+		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+	),
+	"New York" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-30",
+		day_seq("2012-02-20", "2012-02-24"), day_seq("2012-04-06", "2012-04-13"),
+		"2012-05-28", "2012-06-07", "2012-06-22", 
+		day_seq("2012-06-28", "2012-09-05"), "2012-09-17", "2012-09-18", 
+		"2012-09-26", "2012-10-08", "2012-11-06", "2012-11-12", "2012-11-22", 
+		"2012-11-23", day_seq("2012-12-24", "2012-12-31"),
+		# 2013
+		"2013-01-01", "2013-01-21", "2013-01-28", 
+		day_seq("2013-02-18", "2013-02-22"), day_seq("2013-03-25", "2013-04-02"),
+		"2013-05-27", "2013-06-06", "2013-06-21", 
+		day_seq("2013-06-26", "2013-09-08"), "2013-10-14", "2013-11-05", 
+		"2013-11-11", "2013-11-28", "2013-11-29", 
+		day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		"2014-01-01", "2014-01-20", "2014-01-31", 
+		day_seq("2014-02-17", "2014-02-21"), day_seq("2014-04-14", "2014-04-22"),
+		"2014-05-26", "2014-06-05", day_seq("2014-06-27", "2014-09-03"),
+		"2014-09-25", "2014-09-26", "2014-10-13", "2014-11-04", "2014-11-11",
+		"2014-11-27", "2014-11-28", day_seq("2014-12-24", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-04"), "2015-01-19", "2015-01-30", 
+		"2015-02-02", day_seq("2015-02-16", "2015-02-20"), 
+		day_seq("2015-04-03", "2015-04-10"), "2015-05-25", "2015-06-04", 
+		"2015-06-25", day_seq("2015-06-27", "2015-09-08"), "2015-09-14", 
+		"2015-09-15", "2015-09-23", "2015-09-24", "2015-10-12", "2015-11-03", 
+		"2015-11-11", "2015-11-26", "2015-11-27", 
+		day_seq("2015-12-24", "2015-12-31"),
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-01", 
+		day_seq("2016-02-15", "2016-02-19"), "2016-03-25", 
+		day_seq("2016-04-25", "2016-04-29"), "2016-05-30", "2016-06-09",
+		"2016-06-23", day_seq("2016-06-29", "2016-09-07"), "2016-09-12",
+		"2016-10-03", "2016-10-04", "2016-10-10", "2016-10-12", "2016-11-08",
+		"2016-11-11", "2016-11-24", "2016-11-25", 
+		day_seq("2016-12-26", "2016-12-31")
+	),
+	"San Francisco" = c(
+		# 2012
+		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-23", 
+		"2012-02-17", "2012-02-20", "2012-03-16", 
+		day_seq("2012-03-26", "2012-03-30"), "2012-04-06", "2012-04-23",
+		day_seq("2012-05-28", "2012-08-17"), "2012-09-03", "2012-10-08",
+		"2012-11-12", day_seq("2012-11-21", "2012-11-23"), 
+		day_seq("2012-12-24", "2012-12-31"),
+		# 2013
+		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", "2013-02-11",
+		"2013-02-18", day_seq("2013-03-25", "2013-03-29"), "2013-05-27",
+		day_seq("2013-06-03", "2013-08-16"), "2013-09-02", "2013-10-14",
+		"2013-11-11", day_seq("2013-11-27", "2013-11-29"), 
+		day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-20", "2014-01-31",
+		"2014-02-17", day_seq("2014-03-31", "2014-04-04"), "2014-05-26",
+		day_seq("2014-06-02", "2014-08-15"), "2014-09-01", "2014-10-13",
+		"2014-11-11", day_seq("2014-11-26", "2014-11-28"),
+		day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-02"), "2015-01-19", 
+		day_seq("2015-02-19", "2015-02-20"), day_seq("2015-03-30", "2015-04-03"),
+		"2015-05-25", day_seq("2015-06-01", "2015-08-14"), "2015-09-07",
+		"2015-10-12", "2015-11-11", day_seq("2015-11-25", "2015-11-27"),
+		day_seq("2015-12-21", "2015-12-31"), 
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-08", "2016-02-15", 
+		day_seq("2016-03-28", "2016-04-01"), day_seq("2016-05-27", "2016-08-12"),
+		"2016-09-05", "2016-10-10", "2016-11-11", 
+		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+	)
+)
+school_holidays <- lapply(names(school_holidays), function (x) {
+	these_holidays <- ymd(school_holidays[[x]])
+	tibble(
+		city = x,
+		date = seq.Date(
+			ymd(paste(min(year(these_holidays)), "01", "01", sep = "-")),
+			ymd(paste(max(year(these_holidays)), "12", "31", sep = "-")),
+			by = "days"
+		),
+		weekday = wday(date, label = TRUE)
+	) %>% 
+		mutate(school_day = if_else(
+			date %in% these_holidays | weekday %in% c("Sat", "Sun"), 
+			FALSE, TRUE))
+}) %>% 
+	bind_rows() %>% 
+	arrange(date, city)
+school_holidays %>% 
+	mutate(year = year(date)) %>% 
+	mutate(year = ifelse(
+		month(date) <= 7, 
+		paste(year - 1, str_sub(year, 3), sep = "-"), 
+		paste(year, str_sub(year + 1, 3), sep = "-")
+	)) %>% 
+	group_by(city, year) %>% 
+	summarise(school_days = sum(school_day)) %>% 
+	spread(city, school_days)
+
+crime_data <- crime_data %>% 
+	mutate(date_single = as.Date(date_single)) %>% 
+	left_join(school_holidays, 
+						by = c("city_name" = "city", "date_single" = "date")) %>% 
+	mutate(
+		school_day = ifelse(weekday %in% c("Sat", "Sun"), NA, school_day),
+		school_time = ifelse(weekday %in% c("Sat", "Sun"), NA, school_time)
+	) %>% 
+	select(-weekday)
+rm(school_holidays)
+```
+
+
+# School data
+
+The latest data on school locations available from the CCD is for 2015—16. 
+Earlier data are available going back to 1986—87 but the format of the data 
+varies from year to year. The CSV files available contain the school addresses 
+but not a lat/lon or other geocode. For 2015—16 only, there is a SHP file (with 
+the same information included in an Excel file) showing the location and most of 
+the data about each school.
+
+Details of the file formats are available at 
+https://nces.ed.gov/ccd/pubschuniv.asp
+
+The information on each school is separated into several files that can be 
+merged using the NCESSCH school code. This code loads each file, selects the 
+necessary variables (from the large number of variables present) and then merges 
+that data with the geocoded data from the Excel file. Since spatial calculations 
+can be slow, the geocoded data are also filtered to extract only those schools 
+in counties that cover the CODE cities.
+
+```{r}
+# Import school data and mutate variables
+school_info <- read_csv("../original_data/ccd_sch_029_1516_w_1a_011717.csv") %>% 
+	select(
+		school_code = NCESSCH,
+		school_district = LEA_NAME,
+		school_type = SCH_TYPE_TEXT,
+		school_status = SY_STATUS_TEXT,
+		school_level = LEVEL,
+		charter_school = CHARTER_TEXT,
+		virtual_school = VIRTUAL
+	) %>% 
+	mutate(
+		school_level = case_when(
+			school_level == 1 ~ "Primary",
+			school_level == 2 ~ "Middle",
+			school_level == 3 ~ "High",
+			school_level == 4 ~ "Other",
+			TRUE ~ "Not known"
+		),
+		charter_school = case_when(
+			charter_school == "No" ~ FALSE,
+			charter_school == "Yes" ~ TRUE,
+			TRUE ~ NA
+		),
+		virtual_school = case_when(
+			virtual_school == "No" ~ FALSE,
+			virtual_school == "Yes" ~ TRUE,
+			TRUE ~ NA
+		)
+	)
+
+# Import school characteristics
+school_characteristics <- read_csv("../original_data/ccd_sch_129_1516_w_1a_011717.csv") %>% 
+	select(
+		school_code = NCESSCH,
+		magnet_school = MAGNET_TEXT,
+		shared_time_school = SHARED_TIME
+	) %>% 
+	mutate(
+		magnet_school = case_when(
+			magnet_school == "No" ~ FALSE,
+			magnet_school == "Yes" ~ TRUE,
+			TRUE ~ NA
+		),
+		shared_time_school = case_when(
+			shared_time_school == "No" ~ FALSE,
+			shared_time_school == "Yes" ~ TRUE,
+			TRUE ~ NA
+		)
+	)
+
+# Import student numbers
+school_membership <- read_csv("../original_data/ccd_sch_052_1516_w_1a_011717.csv") %>% 
+	select(
+		school_code = NCESSCH,
+		students = TOTAL
+	)
+```
+
+```{r}
+# Import location data and filter out schools that aren't in counties covered by 
+# the CODE data (althoug CODE data originates from cities, there is no city code 
+# in the schools data)
+school_locations <- readxl::read_excel("../original_data/EDGE_GEOCODE_PUBLICSCH_1516.xlsx") %>% 
+	# note that CNTY15 is a character variable because some state FIPS codes have
+	# a leading zero
+	filter(CNTY15 %in% code_counties) %>% 
+	select(
+		school_code = NCESSCH,
+		school_name = NAME,
+		county = CNTY15,
+		latitude = LAT1516,
+		longitude = LON1516
+	)
+# Merge and filter the data
+# The spatial data are on the left-hand side of the join because that will bring
+# over from the other files only those rows relating to schools in counties
+# containing CODE cities
+school_data <- school_locations %>% 
+	left_join(school_info, by = c("school_code")) %>% 
+	left_join(school_characteristics, by = c("school_code")) %>% 
+	left_join(school_membership, by = c("school_code")) %>% 
+	filter(!school_status %in% c("Closed", "Future School", "Inactive"))
+
+# remove temporary variables
+rm(school_characteristics, school_info, school_locations, school_membership)
+```
+
+
+# Geographic boundary files
+
+```{r}
+# set cache folder
+tigris_cache_dir("original_data")
+readRenviron('~/.Renviron')
+
+if (!file.exists("../original_data/block_groups.gpkg")) {
+	
+	# download block group outlines for counties containing CODE cities
+	blockgroup_outlines <- lapply(code_counties, function (x) {
+		# block_groups() from tigris
+		block_groups(
+			state = str_sub(x, 1, 2),
+			county = str_sub(x, 3, 5),
+			cb = FALSE,
+			year = 2016,
+			class = "sf"
+		)
+	}) %>% 
+		reduce(rbind) %>%
+		st_transform(4326) %>% 
+		select(
+			geoid = GEOID,
+			state = STATEFP,
+			county = COUNTYFP,
+			census_tract = TRACTCE,
+			census_block_group = BLKGRPCE,
+			area_land = ALAND, # in square metres
+			area_water = AWATER # in square metres
+		)
+	
+	# save a copy of the block groups data
+	st_write(blockgroup_outlines, "../original_data/block_groups.gpkg", 
+					 quiet = TRUE)
+	
+} else {
+	
+	# load block group outlines
+	blockgroup_outlines <- st_read("../original_data/block_groups.gpkg")
+	
+}
+
+if (!file.exists("../original_data/city_outlines.gpkg")) {
+	
+	# download city outlines
+	code_city_outlines <- lapply(city_data, function (x) {
+		# places() from tigris
+		places(
+			state = x$FIPS_code,
+			cb = FALSE,
+			year = 2016,
+			class = "sf"
+		) %>% 
+			filter(NAME == x$name)
+	}) %>% 
+		reduce(rbind) %>% 
+		st_transform(4326) %>% 
+		select(
+			state = STATEFP,
+			geoid = GEOID,
+			city_name = NAME,
+			area_land = ALAND,
+			area_water = AWATER
+		)
+	
+	# remove the Farallon Islands from the outline of San Francisco
+	code_city_outlines <- code_city_outlines %>% 
+		st_cast("POLYGON") %>% 
+		add_centroid_coordinates() %>%
+		filter(X > -123) %>% 
+		select(-X, -Y) %>% 
+		group_by(city_name) %>%
+		summarise(state = first(state))
+	
+	# save a copy of the city outline data
+	st_write(code_city_outlines, "../original_data/city_outlines.gpkg", 
+					 quiet = TRUE, layer_options = c("OVERWRITE=YES"))
+	
+} else {
+	
+	# read city outlines
+	code_city_outlines <- st_read("../original_data/city_outlines.gpkg")
+	
+}
+
+# filter out block groups that are not at least partly within a CODE city
+blockgroup_outlines <- blockgroup_outlines %>% 
+	st_join(select(code_city_outlines, -state)) %>% 
+	filter(!is.na(city_name))
+
+# remove any block groups that are mostly outside city boundaries
+blockgroup_outlines <- blockgroup_outlines %>% 
+	add_overlap_area(code_city_outlines) %>% 
+	filter(prop_overlap > 0.5)
+```
+
+
+# School locations
+
+```{r}
+# convert school data to an SF object
+school_data <- st_as_sf(school_data, coords = c("longitude", "latitude")) %>% 
+	st_set_crs(4326)
+# determine if each school is in a CODE city
+school_data <- school_data %>% 
+	st_join(code_city_outlines) %>% 
+	filter(!is.na(city_name)) %>% 
+	# we remove these variables because they also exist in blockgroup_outlines
+	select(-state, -county, -city_name)
+
+# add census identifiers to school data
+school_data <- school_data %>% 
+	st_join(blockgroup_outlines) %>% 
+	select(-area_land, -area_water)
+```
+
+# Land cover data
+
+Land cover data for census block groups are available from [Land cover estimates 
+for census geographies](https://osf.io/p4xus/). This project includes a file for 
+each state showing the proportion of each block group with each type of land 
+cover. These can be matched to the other data using the block group GEOID.
+
+```{r}
+land_cover_data <- dir("../original_data", pattern = "^land_cover_", 
+											 full.names = TRUE) %>% 
+	map(function (x) {
+		read_csv(x, col_types = cols(
+			blockgroup = col_character(),
+			.default = col_number()
+		)) %>% 
+			mutate(county = str_sub(blockgroup, 0, 5)) %>% 
+			filter(county %in% code_counties) %>% 
+			select(-county)
+	}) %>% 
+	bind_rows() %>% 
+	rename_at(vars(-blockgroup), ~ paste0("land_cover_", .))
+```
+
+We only need to know what proportion of the land in each blockgroup is developed 
+but not open space, i.e. in [NLCD categories](https://www.mrlc.gov/nlcd11_leg.php) 22, 23 and 24.
+
+```{r}
+land_cover_data <- land_cover_data %>% 
+	mutate(prop_developed = land_cover_prop_22 + land_cover_prop_23 + 
+				 	land_cover_prop_24) %>% 
+	select(blockgroup, prop_developed, land_cover_prop_22, land_cover_prop_23, 
+				 land_cover_prop_24) %>% 
+	mutate(
+		prop_developed = ifelse(prop_developed > 1, 1, prop_developed)
+	)
+```
+
+
+# Population data
+
+Population data are needed to account for the different nature of different 
+census blocks. The variables that will be included in the model come from 
+[Haberman and Ratcliffe (2015)](http://doi.org/10.1111/1745-9125.12076), with 
+the addition of a variable showing the proportion of the population who are 
+teenagers.
+
+```{r}
+if (!file.exists("../original_data/acs_data.csv")) {
+	
+	# download 5-year ACS estimates at block-group level
+	acs_data <- lapply(code_counties, function (x) {
+		# get_acs() from tidycensus
+		get_acs(
+			geography = "block group",
+			variables = c(
+				pop_total = "B01001_001E",
+				gpop_male_10_14 = "B01001_005E",
+				gpop_male_15_17 = "B01001_006E",
+				gpop_male_18_19 = "B01001_007E",
+				gpop_feml_10_14 = "B01001_029E",
+				gpop_feml_15_17 = "B01001_030E",
+				gpop_feml_18_19 = "B01001_031E",
+				eth_white = "B03002_003E",
+				eth_black = "B03002_004E",
+				eth_hispanic = "B03002_012E",
+				eth_asian = "B03002_006E",
+				eth_not_hispanic = "B03002_002E",
+				move_same = "B07201_002E",
+				edu_total = "B15003_001E",
+				gedu_highs = "B15003_017E",
+				gedu_gedal = "B15003_018E",
+				gedu_some1 = "B15003_019E",
+				gedu_somem = "B15003_020E",
+				gedu_assoc = "B15003_021E",
+				gedu_batch = "B15003_022E",
+				gedu_mastr = "B15003_023E",
+				gedu_profl = "B15003_024E",
+				gedu_doctr = "B15003_025E",
+				pov_total = "B17010_001E",
+				pov_inpov = "B17010_002E",
+				pov_nopov = "B17010_022E",
+				median_income = "B19013_001E",
+				occ_total = "B25003_001E",
+				occ_renting  = "B25003_003E"
+			),
+			year = 2016, # this is the end year of the 5-year period
+			output = "wide",
+			state = as.integer(str_sub(x, 1, 2)),
+			county = as.integer(str_sub(x, 3)),
+			key = census_api_key
+		)
+	}) %>% 
+		reduce(rbind)
+	
+	# save a copy of the raw ACS data to a file
+	write_csv(acs_data, "../original_data/acs_data.csv", na = "")
+	
+} else {
+	
+	# load ACS data
+	acs_data <- read_csv("../original_data/acs_data.csv")
+	
+}
+
+# sum variables where required
+acs_data <- acs_data %>% mutate(
+	eth_other = eth_not_hispanic - (eth_white + eth_black + eth_asian),
+	pop_teen = rowSums(select(., starts_with("gpop_"))),
+	edu_school_grad = rowSums(select(., starts_with("gedu_")))
+) %>% select(
+	-eth_not_hispanic,
+	-starts_with("gpop_"),
+	-starts_with("gedu_"),
+	-ends_with("M"), # remove all columns containing margins of error
+	-GEOID1, -NAME1 # remove duplicate name and GEOID columns at end of data
+)
+# convert ACS variables to variables needed for analysis
+acs_data <- acs_data %>% 
+	mutate(
+		# percentage of residents over 25 without a high-school degree
+		perc_no_degree = 1 - (edu_school_grad / edu_total),
+		# percentage of families in poverty
+		perc_poverty = pov_inpov / pov_total,
+		# percentage of renter-occupied housing units
+		perc_renters = occ_renting / occ_total,
+		# percentage of residents who moved in the past year
+		perc_moved = 1 - (move_same / pop_total),
+		# percentage of residents in each ethnic group,
+		perc_eth_white = eth_white / pop_total,
+		perc_eth_black = eth_black / pop_total,
+		perc_eth_hispanic = eth_hispanic / pop_total,
+		perc_eth_asian = eth_asian / pop_total,
+		perc_eth_other = eth_other / pop_total,
+		# percentage of residents who are teenagers
+		perc_teen = pop_teen / pop_total
+	) %>% 
+	# since some block groups have zero population, some of the above calculations
+	# can produce NA values, which then result in *all* block groups having the
+	# value NA once scale() is called, below. We will therefore filter out these
+	# cases now
+	filter_at(vars(starts_with("perc_"), median_income), all_vars(!is.na(.)))
+# scale and center variables
+acs_data <- acs_data %>% 
+	mutate(
+		perc_no_degree_sc = scale_vector(perc_no_degree),
+		perc_poverty_sc = scale_vector(perc_poverty),
+		median_income_sc = scale_vector(median_income) * -1, # reverse scaled
+		perc_renters_sc = scale_vector(perc_renters),
+		perc_moved_sc = scale_vector(perc_moved),
+		perc_teen_sc = scale_vector(perc_teen)
+	)
+# calculate indices and remove unnecessary variables
+acs_data <- acs_data %>% 
+	mutate(
+		# index of concentrated disadvantage
+		index_disadvantage = (perc_no_degree_sc + perc_poverty_sc + 
+														median_income_sc) / 3,
+		# index of residential mobility
+		index_mobility = (perc_renters_sc + perc_moved_sc) / 2,
+		# index of ethnic heterogeneity
+		index_ethnic = 1 - (perc_eth_white^2 + perc_eth_black^2 + 
+													perc_eth_hispanic^2 + perc_eth_asian^2 + 
+													perc_eth_other^2),
+	) %>% 
+	select(geoid = GEOID, name = NAME, pop_total, starts_with("index_"),
+				 perc_teen_sc)
+# clean up
+rm(census_api_key)
+```
+
+
+# Prepare count data
+
+Each of the types of data prepared about must be attached to the relevant block 
+group, converting variables to counts if necessary.
+
+## Calculate crime counts
+
+The crime data already contain the information necessary to construct block group ID codes, so there is no need to carry out any spatial operations.
+
+```{r}
+# set up list of crime types of interest
+crime_types <- list(
+	"assault" = c("13A", "13B", "13C"),
+	"robbery" = c("120")
+)
+# count crimes in each block group
+crime_counts <- lapply(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]]) %>% 
+		mutate(
+			crime_type = paste("crimes", x, sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	reduce(rbind) %>% 
+	spread(crime_type, count)
+crime_counts_term <- lapply(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == TRUE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "term", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	reduce(rbind) %>% 
+	spread(crime_type, count)
+crime_counts_hldy <- lapply(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == FALSE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "hldy", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	reduce(rbind) %>% 
+	spread(crime_type, count)
+crime_counts_timet <- lapply(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
+					 	school_time == TRUE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "timet", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	reduce(rbind) %>% 
+	spread(crime_type, count)
+crime_counts_timef <- lapply(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
+					 	school_time == FALSE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "timef", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	reduce(rbind) %>% 
+	spread(crime_type, count)
+
+# attach crime counts to block groups
+blockgroup_data <- blockgroup_outlines %>%
+	left_join(crime_counts, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_term, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_hldy, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_timet, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_timef, by = c("geoid" = "blockgroup_id")) %>% 
+	mutate_at(vars(starts_with("crimes_")), funs(ifelse(is.na(.), 0, .)))
+
+# remove unnecessary objects
+rm(crime_data, crime_counts, crime_counts_hldy, crime_counts_term, 
+	 crime_counts_timef, crime_counts_timet, crime_types)
+```
+
+## Calculate school and student counts
+
+At this stage we only include high schools and middle schools (i.e. 
+approximately students aged 10 and over).
+
+```{r}
+# count schools and students in each block group
+school_counts <- school_data %>% 
+	st_set_geometry(NULL) %>% 
+	filter(school_level %in% c("High", "Middle")) %>% 
+	mutate(blockgroup_id = paste0(state, county, census_tract, 
+																census_block_group)) %>% 
+	group_by(blockgroup_id) %>% 
+	summarise(school_count = n(), school_students = sum(students))
+# attach school counts to block groups
+blockgroup_data <- blockgroup_data %>% 
+	left_join(school_counts, by = c("geoid" = "blockgroup_id")) %>% 
+	mutate_at(vars(starts_with("school_")), funs(ifelse(is.na(.), 0, .))) %>% 
+	mutate(school = ifelse(school_count > 0, TRUE, FALSE))
+rm(school_counts, school_data)
+```
+
+## Add demographic data
+
+```{r}
+blockgroup_data <- blockgroup_data %>% 
+	left_join(mutate(acs_data, geoid = str_pad(geoid, 12, pad = "0")), 
+						by = c("geoid")) %>% 
+	# st_set_geometry(NULL) %>% 
+	select(-name) %>% 
+	mutate_at(
+		c("pop_total", "index_disadvantage", "index_mobility", "index_ethnic", 
+			"perc_teen_sc"),
+		funs(ifelse(is.na(.), 0, .))
+	) %>% 
+	filter(area_land > 0)
+rm(acs_data)
+```
+
+## Add land-cover data
+
+```{r}
+blockgroup_data <- blockgroup_data %>% 
+	left_join(land_cover_data, by = c("geoid" = "blockgroup"))
+rm(land_cover_data)
+```
+
+## Calculate population density and urban/suburban category
+
+We know the area of the block groups [in square metres](https://www.census.gov/quickfacts/fact/note/US/LND110210), from which we 
+can calculate the population density in square kilometres.
+
+Cut-offs for the urban/suburban/rural classification come from [Urban, Suburban, 
+or Rural?](https://geodharma.wordpress.com/2016/03/11/urban-suburban-or-rural/)
+
+```{r}
+blockgroup_data <- blockgroup_data %>% 
+	mutate(
+		pop_density = pop_total / (area_land / 1E+06),
+		pop_density_sqmi = pop_total / (area_land / 2589988),
+		density_class = case_when(
+			pop_density_sqmi > 3000 ~ "urban",
+			pop_density_sqmi > 1000 ~ "suburban",
+			TRUE ~ "rural"
+		)
+	) %>% 
+	select(-pop_density_sqmi)
+```
+
+
+# Calculate spatial lags of crime counts
+
+To account for spatial autocorrelation in crime counts, we will calculate the 
+mean count of crimes in queen-adjacent cells.
+
+```{r}
+# create list-column of cells that intersect each cell
+# This is done by calling st_intersects() with only one argument, which 
+# intersects the layer with itself. Note that since a cell intersects with
+# itself, we need to account for this when calculating the mean crime count for
+# neighbouring cells
+blockgroup_data$adj <- st_intersects(blockgroup_data)
+
+blockgroup_lags <- blockgroup_data %>% 
+	# slice(1:10) %>% 
+	st_intersects() %>% {
+		lapply(1:length(.), function (x, y) {
+			lapply(
+				grep("^crimes_", names(blockgroup_data), value = TRUE),
+				function (z) {
+					# extract values from data
+					vals <- blockgroup_data %>%
+						st_set_geometry(NULL) %>%
+						select(z)
+					# get values for neighbours
+					nb_vals <- vals %>%
+						slice(y[[x]]) %>%
+						unlist()
+					# calculate lag
+					lag_val <- (sum(nb_vals) - unlist(slice(vals, x))) / (length(nb_vals) - 1)
+					
+					# set lag to zero for cells with no neighbours
+					if (is.na(lag_val)) {
+						lag_val = 0
+					}
+					# cat("Row:", x, "\tColumn:", z, "\tNeighbours:", y[[x]], "\tLag:", 
+					#       lag_val, "\n")
+					
+					names(lag_val) <- paste(z, "lag", sep = "_")
+					lag_val
+				}
+			) %>% unlist()
+		}, y = .) } %>% 
+	reduce(rbind) %>%
+	as_tibble()
+
+# join lags to existing data
+blockgroup_data <- bind_cols(blockgroup_data, blockgroup_lags)
+rm(blockgroup_lags)
+```
+
+# Export data and clean up
+
+```{r}
+# remove list and geometry columns
+blockgroup_data <- blockgroup_data %>% 
+	select(-adj) %>% 
+	st_set_geometry(NULL)
+# write file
+# this uses write.csv() because of a bug with write_csv()
+write.csv(blockgroup_data, "../analysis_data/blockgroup_data.csv", na = "", 
+					row.names = FALSE)
+# rm(blockgroup_data, blockgroup_outlines, city_data, code_city_outlines, 
+#    code_counties)
+```
+

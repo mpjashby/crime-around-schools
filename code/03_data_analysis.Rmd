@@ -1,0 +1,302 @@
+---
+title: "Data analysis"
+output: 
+  html_notebook
+---
+
+
+# Read data
+
+The data are already in the required format because data cleaning has been done,
+so they can just be read directly from the CSV file.
+
+```{r}
+data <- read_csv("../analysis_data/blockgroup_data.csv", col_types = cols(
+	.default = col_double(),
+	geoid = col_character(),
+  state = col_integer(),
+  county = col_character(),
+  census_tract = col_character(),
+  census_block_group = col_integer(),
+  city_name = col_character(),
+  crimes_assault = col_integer(),
+  crimes_robbery = col_integer(),
+  crimes_assault_term = col_integer(),
+  crimes_robbery_term = col_integer(),
+  crimes_assault_hldy = col_integer(),
+  crimes_robbery_hldy = col_integer(),
+  school_count = col_integer(),
+  school_students = col_integer(),
+	school = col_logical(),
+  density_class = col_character()
+))
+```
+
+
+# Filter data
+
+Since our focus is on the association between school location and neighbourhood
+crime, we are primarily interested in residential areas. Also studying 
+industrial zones, etc would substantially increase the variables that needed to
+be controlled in the model. For this reason, we will exclude any blockgroup with
+a population of zero.
+
+```{r}
+data <- data %>% filter(pop_total > 0)
+```
+
+
+
+# Select a model type
+
+Since the dependent variable is a count of crimes, we expect the data to have an
+overdispersed Poisson (i.e. negative binomial) distribution. This can be checked
+visually and by calculating the ratio of the variance of the dependent variable
+to the mean.
+
+```{r}
+data %>% 
+	select(starts_with("crimes_")) %>% 
+	select(-ends_with("_lag")) %>% 
+	psych::multi.hist()
+```
+
+All the histograms suggest Poisson-distributed response variables. We can check
+the var/mean ratio to see if they are over-dispersed.
+
+```{r}
+data %>% 
+	select(starts_with("crimes_")) %>% 
+	select(-ends_with("_lag")) %>% 
+	summarise_all(~ var(.) / mean(.)) %>% 
+	gather()
+```
+
+We can see the variance much greater than the mean in all cases, so (as 
+expected) all the response variables are overdispersed. Thus a NB model approach
+looks reasonable, subject to tests of the resulting models.
+
+
+# Transform variables
+
+Transforming variables can help to ease interpretation, particularly of the
+intercept term. `glmer.nb()` also struggles to converge when some variables are
+on very different scales to others.
+
+To deal with this, we will scale and centre some predictors. Variables with a
+`_sc` suffix have been mean-centred and scaled using `scale()`.
+
+```{r}
+data <- data %>% 
+	mutate(
+		pop_total_sc = as.numeric(scale(pop_total, scale = TRUE, center = TRUE))
+	)
+	# mutate_at(vars(ends_with("_lag")), funs(sc = scale(.)))
+```
+
+By default, R uses the alphabetically first level of a factor as the reference
+level in models. This is not always what we want, so we can use `fct_relevel()`
+from `forcats` to move the preferred reference level to the front. Since the
+necessary variables are currently character vectors, this will also convert them
+to factors.
+
+```{r}
+# data <- data %>%
+# 	mutate(
+# 		city_name = fct_relevel(city_name, "New York")
+# 	)
+```
+
+Initial analysis showed three blockgroups (containing Rikers Island jail, and
+O'Hare and LAX airports) could be influencing the model. All these blockgroups
+have zero population but high crime. Since no suitable dataset exists to allow
+us to model jails (prisons can be obtained from the USGS National Map, but not
+jails), we will simply exclude these three blockgroups for now.
+
+```{r}
+# data <- data %>% 
+# 	filter(!geoid %in% c(
+# 		"060379800281", # LAX
+# 		"170319800001", # O'Hare
+# 		"360050001001"  # Rikers Island
+# 	))
+```
+
+
+# Descriptive analysis
+
+## Schools
+
+```{r}
+data %>% 
+	group_by(city_name, school) %>% 
+	summarise(n = n()) %>% 
+	spread(school, n) %>% 
+	mutate(prop_with_schools = round(`TRUE` / (`TRUE` + `FALSE`), digits = 3))
+```
+
+
+# Test assumptions
+
+In the models we control for disadvantage, population turnover, ethnic 
+heterogeneity and the proportion of the population who are teenagers. To see if 
+this is necessary, we can test whether places with schools are different in 
+these respects to places without schools.
+
+```{r}
+lapply(c("index_disadvantage", "index_mobility", "index_ethnic", 
+				 "perc_teen_sc", "prop_developed"), function (x) {
+	wilcox.test(as.formula(paste(x, "~ school")), data = data) %>% tidy() %>% 
+		mutate(test = paste("Wilcoxcon: ", x, "~ school"))
+}) %>% bind_rows() %>% 
+	select(test, statistic, p.value, alternative) %>% 
+	mutate(p.value = round(p.value, digits = 3))
+```
+
+
+# Build models
+
+We will store all the models in a single list containing a list for each type of
+crime.
+
+```{r}
+m <- list(
+	"aslt" = list(),
+	"robb" = list()
+)
+```
+
+We will also create some empty models for comparison later on.
+
+```{r}
+m$aslt$empty <- glm.nb(crimes_assault ~ 1, data)
+m$robb$empty <- glm.nb(crimes_robbery ~ 1, data)
+```
+
+
+# US-wide models
+
+The first set of models will not take into account which city each blockgroup is
+in, giving us an idea of the relationship between schools and different types of
+crime across the US as a whole.
+
+## School models
+
+The first models will only incorporate the neighbourhood-character variables, so
+that the effect of including schools as a variable can be identified separately.
+This also includes the lag of crime, since we can expect the crime counts to be
+spatial autocorrelated.
+
+We will use `update()` whenver possible, so that changes to one model are
+reflected in subsequent models and to prevent potentially error-causing repeat
+keying of variable names.
+
+```{r paged.print=FALSE}
+m$aslt$nbhd <- update(m$aslt$empty, . ~ pop_total_sc + index_disadvantage + 
+												index_mobility + index_ethnic + perc_teen_sc +
+												prop_developed + crimes_assault_lag, data)
+m$robb$nbhd <- update(m$robb$empty, . ~ pop_total_sc + index_disadvantage + 
+												index_mobility + index_ethnic + perc_teen_sc +
+												prop_developed + crimes_robbery_lag, data)
+
+# compare these models to the empty models
+lapply(m, function (x) anova_compact(x))
+```
+
+From this we can see that the neighbourhood variables explain some of the 
+variance in both types of crime. We could also use `anova(model)` to check
+that each variable contributes to a reduction in deviance (which they do).
+
+Now we can add whether or not there is a middle or high school in a blockgroup.
+
+```{r paged.print=FALSE}
+m$aslt$nbhd_sch <- update(m$aslt$nbhd, . ~ . + school)
+m$robb$nbhd_sch <- update(m$robb$nbhd, . ~ . + school)
+
+# compare these models to the empty models
+lapply(m, function (x) anova_compact(x))
+```
+
+For both types of crime, adding the number of schools in a blockgroup to the
+model decreases the deviance.
+
+```{r paged.print=FALSE}
+lapply(names(m), function (x) report_nbreg(m[[x]]$nbhd_sch, title = x))
+```
+
+
+## Student-number models
+
+
+
+## Term vs vacation models
+
+```{r paged.print=FALSE}
+m$aslt$nbhd_sch_term <- update(m$aslt$nbhd_sch, crimes_assault_term ~ . 
+															 - crimes_assault_lag + crimes_assault_term_lag)
+m$aslt$nbhd_sch_hldy <- update(m$aslt$nbhd_sch, crimes_assault_hldy ~ .
+															 - crimes_assault_lag + crimes_assault_hldy_lag)
+m$robb$nbhd_sch_term <- update(m$robb$nbhd_sch, crimes_robbery_term ~ .
+															 - crimes_robbery_lag + crimes_robbery_term_lag)
+m$robb$nbhd_sch_hldy <- update(m$robb$nbhd_sch, crimes_robbery_hldy ~ .
+															 - crimes_robbery_lag + crimes_robbery_hldy_lag)
+
+report_nbreg(m$aslt$nbhd_sch_term, title = "Assaults, term time")
+report_nbreg(m$aslt$nbhd_sch_hldy, title = "Assaults, vacation")
+compare_coef(m$aslt$nbhd_sch_term, m$aslt$nbhd_sch_hldy, 
+						 title = "Assaults, term time vs vacation")
+report_nbreg(m$robb$nbhd_sch_term, title = "Robberies, term time")
+report_nbreg(m$robb$nbhd_sch_hldy, title = "Robberies, vacation")
+compare_coef(m$robb$nbhd_sch_term, m$robb$nbhd_sch_hldy,
+						 title = "Robberies, term time vs vacation")
+```
+
+## School time vs non-school time
+
+These models compare crimes between 08:00 and 16:59 with crimes at other times,
+*on school days*.
+
+```{r paged.print=FALSE}
+m$aslt$nbhd_sch_timet <- update(m$aslt$nbhd_sch, crimes_assault_timet ~ . 
+																- crimes_assault_lag + crimes_assault_timet_lag)
+m$aslt$nbhd_sch_timef <- update(m$aslt$nbhd_sch, crimes_assault_timef ~ . 
+																- crimes_assault_lag + crimes_assault_timef_lag)
+m$robb$nbhd_sch_timet <- update(m$robb$nbhd_sch, crimes_robbery_timet ~ . 
+																- crimes_robbery_lag + crimes_robbery_timet_lag)
+m$robb$nbhd_sch_timef <- update(m$robb$nbhd_sch, crimes_robbery_timef ~ . 
+																- crimes_robbery_lag + crimes_robbery_timef_lag)
+
+report_nbreg(m$aslt$nbhd_sch_timet, title = "Assaults, school hours")
+report_nbreg(m$aslt$nbhd_sch_timef, title = "Assaults, non-school hours")
+compare_coef(m$aslt$nbhd_sch_timet, m$aslt$nbhd_sch_timef, 
+						 title = "Assaults, school vs non-school hours")
+report_nbreg(m$robb$nbhd_sch_timet, title = "Robberies, school hours")
+report_nbreg(m$robb$nbhd_sch_timef, title = "Robberies, non-school hours")
+compare_coef(m$robb$nbhd_sch_timet, m$robb$nbhd_sch_timef, 
+						 title = "Robberies, school vs non-school hours")
+```
+
+
+
+# City-specific models
+
+These models include a term for the city each block group is in, and an 
+interaction term to allow the co-efficient for `school_count` to vary across
+cities.
+
+## School models
+
+```{r paged.print=FALSE}
+m$aslt$nbhd_sch_city <- update(m$aslt$nbhd_sch, . ~ . + city_name +
+															 	school_count * city_name)
+
+report_nbreg(m$aslt$nbhd_sch_city, title = "Assaults by city")
+
+lapply(levels(data$city_name), function (x) {
+	update(m$aslt$nbhd_sch, data = filter(data, city_name == x)) %>% 
+		tidy() %>% 
+		mutate_if(is.numeric, round, digits = 3)
+})
+```
+
+

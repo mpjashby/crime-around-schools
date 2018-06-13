@@ -1,0 +1,168 @@
+---
+title: "Output"
+output: html_notebook
+---
+
+The code in this notebook produces figures and tables for the models produced in
+the `03_data_analysis.Rmd` file. All models are contained in the `m` object.
+
+
+# Define a ggplot theme and variable labels
+
+This theme is based on `theme_minimal()` with adjustments to parameters as
+needed.
+
+```{r}
+theme_my <- theme_minimal() + theme(
+	axis.text.y = element_blank(),
+	legend.background = element_rect(fill = "#FFFFFF", colour = NA),
+	legend.margin = margin(3, 3, 3, 3),
+	legend.position = "bottom",
+	panel.grid.major.y = element_blank(),
+	panel.grid.minor.y = element_blank()
+)
+```
+
+```{r}
+var_labels = tribble(
+	~name, ~label, ~note,
+	"pop_total_sc",            "population", "mean centered and scaled",
+	"index_disadvantage",      "concentrated disadvantage", "mean centered and scaled",
+	"index_mobility",          "population mobility", "mean centered and scaled",
+	"index_ethnic",            "ethnic heterogeneity", "mean centered and scaled",
+	"perc_teen_sc",            "teen population (%)", "mean centered and scaled",
+	"prop_developed",          "prop. land developed", NA,
+	"schoolTRUE",              "school in blockgroup", NA,
+	"crimes_assault_lag",      "lagged crimes", NA,
+	"crimes_robbery_lag",      "lagged crimes", NA,
+	"crimes_assault_term_lag", "lagged crimes", NA,
+	"crimes_robbery_term_lag", "lagged crimes", NA,
+	"crimes_assault_hldy_lag", "lagged crimes", NA,
+	"crimes_robbery_hldy_lag", "lagged crimes", NA,
+	"crimes_assault_timet_lag", "lagged crimes", NA,
+	"crimes_robbery_timet_lag", "lagged crimes", NA,
+	"crimes_assault_timef_lag", "lagged crimes", NA,
+	"crimes_robbery_timef_lag", "lagged crimes", NA
+)
+```
+
+
+# Calculate plot sizes
+
+The R plot save function works in inches, so we need to convert measurements.
+
+*Note we're using the export button within RStudio's plot window, rather than
+`ggsave()` because the later [outputs points as characters](https://stackoverflow.com/questions/42744012/importing-dotplot-from-r-to-adobe-illustrator-causes-dot-shapes-to-change) 
+that can cause problems in Illustrator.*
+
+## Powerpoint
+
+This is the size for a content-only slide in the NTU powerpoint style.
+
+```{r}
+plot_dims <- list(
+  "width" = unit(230.7, "mm") %>% grid::convertUnit("in", valueOnly = TRUE) %>% 
+  	round(digits = 2),
+	"height" = unit(146.7, "mm") %>% grid::convertUnit("in", valueOnly = TRUE) %>% 
+  	round(digits = 2)
+)
+```
+
+
+# Plot overall model
+
+```{r}
+plot_overall <- confint_plot(m$aslt$nbhd_sch, x_lim = c(1/1.6, 1.6), 
+	legend_pos = c(1, 1),
+	term_order = c(
+	  "crimes_assault_lag",
+	  "pop_total_sc",
+	  "perc_teen_sc",
+	  "index_disadvantage",
+	  "index_mobility",
+	  "index_ethnic",
+	  "prop_developed",
+	  "schoolTRUE"
+  ),
+	title = "Assaults, \nall days and times"
+)
+
+```
+
+
+
+# Plot school-day vs non-school day models
+
+```{r}
+plot_term <- gridExtra::grid.arrange(
+confint_plot(m$aslt$nbhd_sch_term, x_lim = c(1/1.8, 1.8), legend_pos = c(1, 1),
+	term_order = c(
+	  "crimes_assault_term_lag",
+	  "pop_total_sc",
+	  "perc_teen_sc",
+	  "index_disadvantage",
+	  "index_mobility",
+	  "index_ethnic",
+	  "prop_developed",
+	  "schoolTRUE"
+  ),
+	title = "Assaults, \nschool weekdays"
+),
+confint_plot(m$aslt$nbhd_sch_hldy, x_lim = c(1/1.8, 1.8), legend_pos = c(1, 1),
+	term_order = c(
+	  "crimes_assault_hldy_lag",
+	  "pop_total_sc",
+	  "perc_teen_sc",
+	  "index_disadvantage",
+	  "index_mobility",
+	  "index_ethnic",
+	  "prop_developed",
+	  "schoolTRUE"
+  ),
+	title = "Assaults, \nnon-school weekdays"
+),
+layout_matrix = rbind(c(1), c(2))
+)
+
+```
+
+
+# Plot school-time vs non-school-time models
+
+```{r}
+plot_timet <- gridExtra::grid.arrange(
+confint_plot(m$aslt$nbhd_sch_timet, x_lim = c(1/2.5, 2.5), legend_pos = c(1, 1),
+	term_order = c(
+	  "crimes_assault_timet_lag",
+	  "pop_total_sc",
+	  "perc_teen_sc",
+	  "index_disadvantage",
+	  "index_mobility",
+	  "index_ethnic",
+	  "prop_developed",
+	  "schoolTRUE"
+  ),
+	title = "Assaults, \nschool weekdays \n08:00–16:59"
+),
+confint_plot(m$aslt$nbhd_sch_timef, x_lim = c(1/2.5, 2.5), legend_pos = c(1, 1),
+	term_order = c(
+	  "crimes_assault_timef_lag",
+	  "pop_total_sc",
+	  "perc_teen_sc",
+	  "index_disadvantage",
+	  "index_mobility",
+	  "index_ethnic",
+	  "prop_developed",
+	  "schoolTRUE"
+  ),
+	title = "Assaults, \nschool weekdays \n17:00–07:59"
+),
+layout_matrix = rbind(c(1), c(2))
+)
+
+# ggsave("../outputs/model_time.pdf", plot = plot_timet, width = 230.7, height = 146.7,
+# 			 unit = "mm")
+
+plot(plot_timet)
+
+```

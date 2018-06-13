@@ -1,0 +1,39 @@
+# History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+
+# RStudio files
+.Rproj.user/
+
+# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
+.httr-oauth
+
+# knitr and R markdown default cache directories
+/*_cache/
+/cache/
+
+# R markdown HTML output documents
+# (these are automatically created whenever a notebook is saved, but can't be
+# displayed inline by GitHub, whereas .rmd files can)
+*.nb.html
+
+# Temporary files created by R markdown
+*.utf8.md
+*.knit.md
+.Rproj.user
+
+# Key for the US Census API
+# (this is needed by the acs package)
+code/census_api_key.R
+
+# Original data files, which are too large to store on GitHub and are in any
+# case all available online
+/original_data/
+
+# Exclude outputs since these often need context (e.g. in a pre-print) to be 
+# meaningful.
+/outputs/
+
