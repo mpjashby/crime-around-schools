@@ -29,11 +29,16 @@ data before analysis is done in this file.
 
 ```{r}
 # Create vector of counties containing CODE cities
+# Note that Kansas City and New York City are in multiple counties
 code_counties <- c(
 	"17031", # Cook County, IL
 	"26163", # Wayne County, MI
 	"48121", # Denton County, TX
 	"48439", # Tarrant County, TX
+	"29095", # Jackson County, KY
+	"29047", # Clay County, KY
+	"29037", # Cass County, KY
+	"29165", # Platte County, KY
 	"06037", # Los Angeles County, CA
 	"21111", # Jefferson County, KY
 	"36005", # Bronx County, NY
@@ -42,18 +47,36 @@ code_counties <- c(
 	"36081", # Queens County, NY
 	"36085", # Richmond County, NY
 	"06075", # San Francisco County, CA
+	"04019", # Pima County, AZ
 	"51810" # Virginia Beach County, VA
 )
 # Create list of identifiers for CODE cities
-city_data <- list(
-	'Chicago' = list('FIPS_code' = '17', 'name' = 'Chicago', 'abbr' = 'IL'),
-	'Detroit' = list('FIPS_code' = '26', 'name' = 'Detroit', 'abbr' = 'MI'),
-	'FW' = list('FIPS_code' = '48', 'name' = 'Fort Worth', 'abbr' = 'TX'),
-	'LA' = list('FIPS_code' = '06', 'name' = 'Los Angeles', 'abbr' = 'CA'),
-	'Louisville' = list('FIPS_code' = '21', 'name' = 'Louisville', 'abbr' = 'KY'),
-	'NYC' = list('FIPS_code' = '36', 'name' = 'New York', 'abbr' = 'NY'),
-	'SF' = list('FIPS_code' = '06', 'name' = 'San Francisco', 'abbr' = 'CA')
+cities <- tribble(
+  ~name, ~fips, ~prefix, ~state,
+  "Chicago",        "17", "chi", "IL",
+  "Detroit",        "26", "dtt", "MI",
+  "Fort Worth",     "48", "ftw", "TX",
+  "Kansas City",    "29", "kcm", "MO",
+  "Los Angeles",    "06", "lax", "CA",
+  "Louisville",     "21", "lou", "KY",
+  "New York",       "36", "nyc", "NY",
+  "San Francisco",  "06", "sfo", "CA",
+  "Tucson",         "04", "tus", "AZ",
+  "Virginia Beach", "51", "vib", "VA"
 )
+
+# city_data <- list(
+# 	'Chicago' = list('FIPS_code' = '17', 'name' = 'Chicago', 'abbr' = 'IL'),
+# 	'Detroit' = list('FIPS_code' = '26', 'name' = 'Detroit', 'abbr' = 'MI'),
+# 	'FW' = list('FIPS_code' = '48', 'name' = 'Fort Worth', 'abbr' = 'TX'),
+# 	'KC' = list('FIPS_code' = "29", 'name' = "Kansas City", "abbr" = "MO"),
+# 	'LA' = list('FIPS_code' = '06', 'name' = 'Los Angeles', 'abbr' = 'CA'),
+# 	'Louisville' = list('FIPS_code' = '21', 'name' = 'Louisville', 'abbr' = 'KY'),
+# 	'NYC' = list('FIPS_code' = '36', 'name' = 'New York', 'abbr' = 'NY'),
+# 	'SF' = list('FIPS_code' = '06', 'name' = 'San Francisco', 'abbr' = 'CA'),
+# 	"Tucson" = list('FIPS_code' = "04", 'name' = 'Tucson', 'abbr' = 'AZ'),
+# 	"VB" = list("")
+# )
 ```
 
 
@@ -66,12 +89,12 @@ be immediately passed through to a single CSV output file.
 ```{r}
 if (!file.exists("../original_data/crime_data.csv.gz")) {
 	
-	crime_data <- dir("../original_data", pattern = "^large_city_crime_data_core_", 
+	crime_data <- dir("../original_data", pattern = "^crime_open_database_core_", 
 										full.names = TRUE) %>% 
 		# explicit column typing is required because some columns are mostly digits
 		# but have a few rows with characters and so they aren't caught by the
 		# column-typing algorithm
-		map(read_csv, col_types = cols(
+		map_df(read_csv, col_types = cols(
 			.default = col_character(),
 			uid = col_integer(),
 			date_single = col_datetime(format = ""),
@@ -84,9 +107,6 @@ if (!file.exists("../original_data/crime_data.csv.gz")) {
 			block_group = col_integer(),
 			block = col_integer()
 		)) %>% 
-		reduce(rbind) %>% 
-		# we need five years of data so NO and VB crimes should be excluded
-		filter(!city_name %in% c("New Orleans", "Virginia Beach")) %>% 
 		select(
 			uid, 
 			city_name, 
@@ -101,17 +121,14 @@ if (!file.exists("../original_data/crime_data.csv.gz")) {
 			county = fips_county, 
 			census_tract = tract, 
 			census_blockgroup = block_group,
-			census_block = block
+			census_block = block,
+			location_type,
+			location_category
 		)
 	
 	# store a copy of the crime data
 	crime_data %>% 
 		write_csv("../original_data/crime_data.csv.gz", na = "")
-	
-	# zip the resulting file because it's very large (>800MB)
-	# zip(zipfile = "../analysis_data/crime_data.csv.zip", 
-	#       files = c("../analysis_data/crime_data.csv"))
-	# file.remove("../analysis_data/crime_data.csv")
 	
 } else {
 	
@@ -127,7 +144,7 @@ crime_data <- crime_data %>% mutate(
 ```
 
 
-# Identify term-time offences
+## Identify term-time offences
 
 We need to know the dates on which schools were closed in each city in each 
 year. Data are from the National Council on Teacher Quality [Teacher Contracts 
@@ -137,12 +154,12 @@ Database](https://www.nctq.org/contract-database/).
 school_holidays <- list(
 	"Chicago" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-01-27", 
-		"2012-02-03", "2012-02-13", "2012-02-20", "2012-03-05", 
-		day_seq("2012-04-02", "2012-04-06"), "2012-04-13", "2012-04-28", 
-		"2012-05-28", day_seq("2012-06-14", "2012-09-03"), "2012-10-12", 
-		"2012-11-02", "2012-11-12", "2012-11-22", "2012-11-23", 
-		day_seq("2012-12-24", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-01-27", 
+		# "2012-02-03", "2012-02-13", "2012-02-20", "2012-03-05", 
+		# day_seq("2012-04-02", "2012-04-06"), "2012-04-13", "2012-04-28", 
+		# "2012-05-28", day_seq("2012-06-14", "2012-09-03"), "2012-10-12", 
+		# "2012-11-02", "2012-11-12", "2012-11-22", "2012-11-23", 
+		# day_seq("2012-12-24", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", "2013-01-25", 
 		"2013-02-12", "2013-02-18", "2013-03-29", 
@@ -168,15 +185,21 @@ school_holidays <- list(
 		day_seq("2016-04-18", "2016-04-22"), "2016-05-30",
 		day_seq("2016-06-22", "2016-09-05"), "2016-10-10", "2016-11-04", 
 		"2016-11-11", day_seq("2016-11-23", "2016-11-25"), 
-		day_seq("2016-12-26", "2016-12-31")
+		day_seq("2016-12-26", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-06"), "2017-01-16", "2017-02-03",
+		"2017-02-20", day_seq("2017-04-07", "2017-04-14"), "2017-05-29",
+		day_seq("2017-06-21", "2017-08-31"), "2017-09-01", "2017-09-04", 
+		"2017-10-09", "2017-11-03", day_seq("2017-11-22", "2017-11-24"), 
+		day_seq("2017-12-25", "2017-12-31")
 	),
 	"Detroit" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", 
-		day_seq("2012-01-20", "2012-01-24"), "2012-03-06", "2012-03-07", 
-		"2012-03-20", "2012-03-21", day_seq("2012-04-06", "2012-04-13"), 
-		"2012-05-28", day_seq("2012-06-15", "2012-09-03"), "2012-11-06", 
-		"2012-11-22", "2012-11-23", day_seq("2012-12-24", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-06"), "2012-01-16", 
+		# day_seq("2012-01-20", "2012-01-24"), "2012-03-06", "2012-03-07", 
+		# "2012-03-20", "2012-03-21", day_seq("2012-04-06", "2012-04-13"), 
+		# "2012-05-28", day_seq("2012-06-15", "2012-09-03"), "2012-11-06", 
+		# "2012-11-22", "2012-11-23", day_seq("2012-12-24", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", 
 		day_seq("2013-02-18", "2013-02-22"), "2013-03-05", "2013-03-06", 
@@ -201,16 +224,21 @@ school_holidays <- list(
 		day_seq("2016-03-25", "2016-04-01"), "2016-04-12", "2016-04-13", 
 		"2016-04-26", "2016-05-30", day_seq("2016-06-18", "2016-09-05"), 
 		"2016-11-08", day_seq("2016-11-23", "2016-11-25"), 
-		day_seq("2016-12-26", "2016-12-31")
+		day_seq("2016-12-26", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-06"), "2017-01-16", "2017-02-17",
+		"2017-02-20", day_seq("2017-04-14", "2017-04-21"), "2017-05-29",
+		day_seq("2017-06-21", "2017-09-04"), "2017-11-07", 
+		day_seq("2017-11-22", "2017-11-24"), day_seq("2017-12-25", "2017-12-31")
 	),
 	"Fort Worth" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-02"), "2012-01-13", "2012-01-16", 
-		"2012-02-03", day_seq("2012-03-12", "2012-03-16"), "2012-04-06", 
-		"2012-05-28", day_seq("2012-06-02", "2012-08-26"), "2012-09-03", 
-		"2012-09-14", "2012-10-08", "2012-11-05", 
-		day_seq("2012-11-19", "2012-11-23"),
-		day_seq("2012-12-24", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-02"), "2012-01-13", "2012-01-16", 
+		# "2012-02-03", day_seq("2012-03-12", "2012-03-16"), "2012-04-06", 
+		# "2012-05-28", day_seq("2012-06-02", "2012-08-26"), "2012-09-03", 
+		# "2012-09-14", "2012-10-08", "2012-11-05", 
+		# day_seq("2012-11-19", "2012-11-23"),
+		# day_seq("2012-12-24", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-07"), "2013-01-18", "2013-01-21", 
 		"2013-02-01", day_seq("2013-03-11", "2013-03-15"), "2013-03-29", 
@@ -233,15 +261,52 @@ school_holidays <- list(
 		day_seq("2016-01-01", "2016-01-04"), "2016-01-18", "2016-02-05",
 		day_seq("2016-03-14", "2016-03-18"), "2016-03-25", "2016-05-30",
 		day_seq("2016-06-03", "2016-08-19"), "2016-09-05", "2016-10-10",
-		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-23", "2016-12-31")
+		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-23", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-09"), "2017-01-16", "2017-02-03",
+		day_seq("2017-03-13", "2017-03-17"), "2017-04-14", "2017-05-29",
+		day_seq("2017-06-05", "2017-08-18"), "2017-09-04", "2017-10-09",
+		day_seq("2017-11-20", "2017-11-24"), day_seq("2017-12-22", "2017-12-31")
+	),
+	"Kansas City" = c(
+		# 2013
+		day_seq("2013-01-01", "2013-01-07"), "2013-01-21", "2013-02-18",
+		"2013-02-28", "2013-03-01", day_seq("2013-03-25", "2013-03-29"),
+		day_seq("2013-05-21", "2013-08-11"), "2013-09-02", 
+		day_seq("2013-10-17", "2013-10-18"), day_seq("2013-11-27", "2013-11-29"),
+		day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-06"), "2014-01-20", "2014-02-06", 
+		"2014-02-07", "2014-02-17", day_seq("2014-03-17", "2014-03-21"), 
+		"2014-04-18", day_seq("2014-05-21", "2014-08-08"), "2014-09-01", 
+		"2014-09-26", day_seq("2014-10-16", "2014-10-17"), 
+		day_seq("2014-11-26", "2014-11-28"), day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-02"), "2015-01-19", 
+		day_seq("2015-02-12", "2015-02-16"), day_seq("2015-03-16", "2015-03-20"),
+		"2015-04-03", day_seq("2015-05-20", "2015-08-07"), "2015-09-07",
+		day_seq("2015-10-15", "2015-10-16"), day_seq("2015-11-25", "2015-11-27"),
+		day_seq("2015-12-21", "2015-12-31"), 
+		# 2016
+		"2016-01-01", "2016-01-18", day_seq("2016-02-11", "2016-02-15"),
+		day_seq("2016-03-14", "2016-03-18"), "2016-03-25", 
+		day_seq("2016-05-18", "2016-08-14"), day_seq("2016-09-02", "2016-09-05"), 
+		"2016-10-07", "2016-10-20", "2016-10-21", 
+		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-03"), "2017-01-16",
+		day_seq("2017-02-16", "2017-02-20"), day_seq("2017-03-13", "2017-03-17"),
+		"2017-04-14", day_seq("2017-05-29", "2017-08-11"), "2017-09-01",
+		"2017-09-04", "2017-10-19", "2017-10-20", 
+		day_seq("2017-11-22", "2017-11-24"), day_seq("2017-12-22", "2017-12-31")
 	),
 	"Los Angeles" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-02-20", 
-		day_seq("2012-03-30", "2012-04-06"), "2012-05-28", 
-		day_seq("2012-06-25", "2012-08-13"), day_seq("2012-08-31", "2012-09-03"),
-		"2012-09-17", "2012-09-26", "2012-11-12", 
-		day_seq("2012-11-22", "2012-11-23"), day_seq("2012-12-17", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-06"), "2012-01-16", "2012-02-20", 
+		# day_seq("2012-03-30", "2012-04-06"), "2012-05-28", 
+		# day_seq("2012-06-25", "2012-08-13"), day_seq("2012-08-31", "2012-09-03"),
+		# "2012-09-17", "2012-09-26", "2012-11-12", 
+		# day_seq("2012-11-22", "2012-11-23"), day_seq("2012-12-17", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-04"), "2013-02-21", "2013-02-18", 
 		day_seq("2013-03-25", "2013-04-01"), "2013-05-27", 
@@ -265,15 +330,21 @@ school_holidays <- list(
 		day_seq("2016-03-21", "2016-03-28"), "2016-05-30", 
 		day_seq("2016-06-13", "2016-08-15"), day_seq("2016-09-02", "2016-09-05"),
 		"2016-10-03", "2016-10-12", "2016-11-11", 
-		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+		day_seq("2016-11-21", "2016-11-25"), day_seq("2016-12-19", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-06"), "2017-01-16", "2017-02-20",
+		"2017-03-31", day_seq("2017-04-10", "2017-04-14"), "2017-05-29",
+		day_seq("2017-06-12", "2017-08-14"), "2017-09-01", "2017-09-04",
+		"2017-09-21", "2017-11-10", day_seq("2017-11-20", "2017-11-24"),
+		day_seq("2017-12-18", "2017-12-31")
 	),
 	"Louisville" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-02-13", 
-		"2012-03-02", day_seq("2012-04-09", "2012-04-13"), "2012-05-04",
-		"2012-05-22", day_seq("2012-05-28", "2012-08-20"), "2012-09-03",
-		"2012-10-05", "2012-10-08", "2012-11-05", "2012-11-06", 
-		day_seq("2012-11-21", "2012-11-23"), day_seq("2012-12-21", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-02-13", 
+		# "2012-03-02", day_seq("2012-04-09", "2012-04-13"), "2012-05-04",
+		# "2012-05-22", day_seq("2012-05-28", "2012-08-20"), "2012-09-03",
+		# "2012-10-05", "2012-10-08", "2012-11-05", "2012-11-06", 
+		# day_seq("2012-11-21", "2012-11-23"), day_seq("2012-12-21", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", 
 		day_seq("2013-02-25", "2013-03-01"), day_seq("2013-04-01", "2013-04-05"),
@@ -299,16 +370,22 @@ school_holidays <- list(
 		day_seq("2016-03-31", "2016-04-08"), "2016-05-06", "2016-05-17",
 		day_seq("2016-05-26", "2016-08-09"), "2016-09-05", 
 		day_seq("2016-09-30", "2016-10-04"), "2016-11-07", "2016-11-08",
-		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-02"), "2017-01-16", "2017-02-27",
+		"2017-03-13", day_seq("2017-03-30", "2017-04-07"), "2017-05-05",
+		day_seq("2017-05-25", "2017-08-15"), "2017-09-04", 
+		day_seq("2017-10-06", "2017-10-10"), day_seq("2017-11-22", "2017-11-24"),
+		day_seq("2017-12-20", "2017-12-31")
 	),
 	"New York" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-30",
-		day_seq("2012-02-20", "2012-02-24"), day_seq("2012-04-06", "2012-04-13"),
-		"2012-05-28", "2012-06-07", "2012-06-22", 
-		day_seq("2012-06-28", "2012-09-05"), "2012-09-17", "2012-09-18", 
-		"2012-09-26", "2012-10-08", "2012-11-06", "2012-11-12", "2012-11-22", 
-		"2012-11-23", day_seq("2012-12-24", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-30",
+		# day_seq("2012-02-20", "2012-02-24"), day_seq("2012-04-06", "2012-04-13"),
+		# "2012-05-28", "2012-06-07", "2012-06-22", 
+		# day_seq("2012-06-28", "2012-09-05"), "2012-09-17", "2012-09-18", 
+		# "2012-09-26", "2012-10-08", "2012-11-06", "2012-11-12", "2012-11-22", 
+		# "2012-11-23", day_seq("2012-12-24", "2012-12-31"),
 		# 2013
 		"2013-01-01", "2013-01-21", "2013-01-28", 
 		day_seq("2013-02-18", "2013-02-22"), day_seq("2013-03-25", "2013-04-02"),
@@ -337,16 +414,23 @@ school_holidays <- list(
 		"2016-06-23", day_seq("2016-06-29", "2016-09-07"), "2016-09-12",
 		"2016-10-03", "2016-10-04", "2016-10-10", "2016-10-12", "2016-11-08",
 		"2016-11-11", "2016-11-24", "2016-11-25", 
-		day_seq("2016-12-26", "2016-12-31")
+		day_seq("2016-12-26", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-02"), "2017-01-16", "2017-01-30",
+		day_seq("2017-02-20", "2017-02-24"), day_seq("2017-04-10", "2017-04-18"),
+		"2017-05-29", "2017-06-08", "2017-06-23", "2017-06-26",
+		day_seq("2017-06-29", "2017-09-06"), "2017-09-21", "2017-09-22",
+		"2017-10-09", "2017-11-07", "2017-11-23", "2017-11-24",
+		day_seq("2017-12-25", "2017-12-31")
 	),
 	"San Francisco" = c(
 		# 2012
-		day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-23", 
-		"2012-02-17", "2012-02-20", "2012-03-16", 
-		day_seq("2012-03-26", "2012-03-30"), "2012-04-06", "2012-04-23",
-		day_seq("2012-05-28", "2012-08-17"), "2012-09-03", "2012-10-08",
-		"2012-11-12", day_seq("2012-11-21", "2012-11-23"), 
-		day_seq("2012-12-24", "2012-12-31"),
+		# day_seq("2012-01-01", "2012-01-02"), "2012-01-16", "2012-01-23", 
+		# "2012-02-17", "2012-02-20", "2012-03-16", 
+		# day_seq("2012-03-26", "2012-03-30"), "2012-04-06", "2012-04-23",
+		# day_seq("2012-05-28", "2012-08-17"), "2012-09-03", "2012-10-08",
+		# "2012-11-12", day_seq("2012-11-21", "2012-11-23"), 
+		# day_seq("2012-12-24", "2012-12-31"),
 		# 2013
 		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", "2013-02-11",
 		"2013-02-18", day_seq("2013-03-25", "2013-03-29"), "2013-05-27",
@@ -369,11 +453,81 @@ school_holidays <- list(
 		"2016-01-01", "2016-01-18", "2016-02-08", "2016-02-15", 
 		day_seq("2016-03-28", "2016-04-01"), day_seq("2016-05-27", "2016-08-12"),
 		"2016-09-05", "2016-10-10", "2016-11-11", 
-		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31")
+		day_seq("2016-11-23", "2016-11-25"), day_seq("2016-12-19", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-02"), "2017-01-16", "2017-01-27", 
+		"2017-02-20", day_seq("2017-03-27", "2017-03-31"), 
+		day_seq("2017-05-29", "2017-08-18"), "2017-09-04", "2017-10-09",
+		"2017-11-10", day_seq("2017-11-20", "2017-11-24"), 
+		day_seq("2017-12-22", "2017-12-31")
+	),
+	"Tucson" = c(
+		# 2013 from http://edweb.tusd1.org/sahuaro/2012_2013/SCHOOL_CALENDAR-English_2012-2013_pdf.pdf
+		# and https://www.dhaydock.org/2013-2014/2013-14%20CALENDAR.pdf
+		day_seq("2013-01-01", "2013-01-04"), "2013-01-21", "2013-02-07", 
+		"2013-02-08", day_seq("2013-02-21", "2013-02-26"), "2013-03-15",
+		day_seq("2013-03-25", "2013-04-01"),  day_seq("2013-05-24", "2013-08-09"), 
+		"2013-09-03", "2013-10-21", "2013-11-11", 
+		day_seq("2013-11-25", "2013-11-29"), day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		day_seq("2014-01-01", "2014-01-03"), "2014-01-20", "2014-02-10",
+		"2014-02-17", "2014-03-03", day_seq("2014-04-18", "2014-04-25"),
+		"2014-05-02", "2015-05-26", day_seq("2014-06-02", "2014-07-31"),
+		"2014-09-01", day_seq("2014-09-03", "2014-09-10"), "2014-11-11",
+		"2014-11-27", "2014-11-28", day_seq("2014-12-19", "2014-12-31"),
+		# 2015
+		day_seq("2015-01-01", "2015-01-02"), "2015-01-19", "2015-02-26",
+		"2015-02-27", day_seq("2015-03-13", "2015-03-20"), "2015-04-03",
+		day_seq("2015-05-22", "2015-08-06"), "2015-09-07", 
+		day_seq("2015-10-09", "2015-10-16"), "2015-11-11", "2015-11-26", 
+		"2015-11-27", day_seq("2015-12-18", "2015-12-31"),
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-25", "2016-02-26", 
+		day_seq("2016-03-18", "2016-03-25"), day_seq("2016-05-26", "2016-08-03"),
+		"2016-09-05", day_seq("2016-10-07", "2016-10-14"), "2016-11-11",
+		"2016-11-24", "2016-11-25", day_seq("2016-12-23", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-06"), "2017-01-16", "2017-02-23",
+		"2017-02-24", day_seq("2017-03-17", "2017-03-24"), "2017-04-14",
+		day_seq("2017-05-26", "2017-08-03"), "2017-09-04",
+		day_seq("2017-10-06", "2017-10-13"), "2017-11-10", "2017-11-23",
+		"2017-11-24", day_seq("2017-12-22", "2017-12-31")
+	),
+	"Virginia Beach" = c(
+		# 2013
+		"2013-01-01", "2013-01-21", "2013-01-25", "2013-02-18", 
+		day_seq("2013-03-29", "2013-04-05"), "2013-05-27", 
+		day_seq("2013-06-17", "2013-09-02"), "2013-11-05", "2013-11-11",
+		"2013-11-28", "2013-11-29", day_seq("2013-12-23", "2013-12-31"),
+		# 2014
+		"2014-01-01", "2014-01-20", "2014-01-24", "2014-03-28", 
+		day_seq("2014-04-14", "2014-04-18"), "2014-05-26",
+		day_seq("2014-06-16", "2014-09-01"), "2014-11-04", "2014-11-11",
+		"2014-11-27", "2014-11-28", day_seq("2014-12-22", "2014-12-31"),
+		# 2015
+		"2015-01-01", "2015-01-02", "2015-01-19", "2015-01-26", "2015-01-27",
+		"2015-02-16", day_seq("2015-04-03", "2015-04-10"), "2015-05-25", 
+		day_seq("2015-06-19", "2015-09-07"), "2015-11-03", "2015-11-11", 
+		"2015-11-26", "2015-11-27", day_seq("2015-12-24", "2015-12-31"),
+		# 2016
+		"2016-01-01", "2016-01-18", "2016-02-01", "2016-02-15", 
+		day_seq("2016-03-28", "2016-04-01"), "2016-04-13", "2016-05-30",
+		day_seq("2016-06-20", "2016-09-05"), "2016-10-10", "2016-10-24",
+		"2016-11-08", "2016-11-11", "2016-11-24", "2016-11-25",
+		day_seq("2016-12-23", "2016-12-31"),
+		# 2017
+		day_seq("2017-01-01", "2017-01-02"), "2017-01-16", "2017-01-30",
+		"2017-02-20", "2017-03-08", day_seq("2017-04-10", "2017-04-14"),
+		"2017-05-29", day_seq("2017-06-19", "2017-09-04"), "2017-10-09",
+		"2017-11-07", "2017-11-23", "2017-11-24", 
+		day_seq("2017-12-21", "2017-12-31")
 	)
 )
-school_holidays <- lapply(names(school_holidays), function (x) {
+
+school_holidays <- map_df(names(school_holidays), function (x) {
+	
 	these_holidays <- ymd(school_holidays[[x]])
+
 	tibble(
 		city = x,
 		date = seq.Date(
@@ -386,9 +540,11 @@ school_holidays <- lapply(names(school_holidays), function (x) {
 		mutate(school_day = if_else(
 			date %in% these_holidays | weekday %in% c("Sat", "Sun"), 
 			FALSE, TRUE))
-}) %>% 
-	bind_rows() %>% 
+
+	}) %>% 
 	arrange(date, city)
+
+# show table of count of school days each year
 school_holidays %>% 
 	mutate(year = year(date)) %>% 
 	mutate(year = ifelse(
@@ -400,6 +556,32 @@ school_holidays %>%
 	summarise(school_days = sum(school_day)) %>% 
 	spread(city, school_days)
 
+# show chart of holidays each year
+school_holidays %>% 
+	mutate(
+		day_of_year = yday(date),
+		school_day = case_when(
+			weekday %in% c("Sat", "Sun") ~ "weekend",
+			school_day == TRUE ~ "school day",
+			TRUE ~ "vacation day"
+		),
+		year = year(date)
+	) %>% 
+	ggplot(aes(x = day_of_year, y = city, fill = school_day)) +
+	geom_tile() +
+	scale_x_continuous(expand = c(0, 0), breaks = seq(0, 366, by = 30)) +
+	scale_fill_manual(values = c("school day" = "#CCCCCC", "vacation day" = "#666666", 
+															 "weekend" = "#999999")) +
+	labs(x = NULL, y = NULL) +
+	facet_grid(rows = vars(year)) +
+	theme_minimal() +
+	theme(
+		axis.ticks.x = element_line(),
+		legend.position = "bottom",
+		legend.title = element_blank(),
+		panel.grid = element_blank()
+	)
+
 crime_data <- crime_data %>% 
 	mutate(date_single = as.Date(date_single)) %>% 
 	left_join(school_holidays, 
@@ -409,8 +591,23 @@ crime_data <- crime_data %>%
 		school_time = ifelse(weekday %in% c("Sat", "Sun"), NA, school_time)
 	) %>% 
 	select(-weekday)
+
 rm(school_holidays)
 ```
+
+
+## Identify private (dwelling) vs public offenses
+
+```{r}
+crime_data <- crime_data %>% 
+	mutate(public_location = case_when(
+		location_category %in% c("leisure", "open space", "retail", "street",
+														 "transportation") ~ TRUE,
+		location_category == "residence" ~ FALSE,
+		TRUE ~ NA
+	))
+```
+
 
 
 # School data
@@ -507,6 +704,7 @@ school_locations <- readxl::read_excel("../original_data/EDGE_GEOCODE_PUBLICSCH_
 		latitude = LAT1516,
 		longitude = LON1516
 	)
+
 # Merge and filter the data
 # The spatial data are on the left-hand side of the join because that will bring
 # over from the other files only those rows relating to schools in counties
@@ -514,8 +712,7 @@ school_locations <- readxl::read_excel("../original_data/EDGE_GEOCODE_PUBLICSCH_
 school_data <- school_locations %>% 
 	left_join(school_info, by = c("school_code")) %>% 
 	left_join(school_characteristics, by = c("school_code")) %>% 
-	left_join(school_membership, by = c("school_code")) %>% 
-	filter(!school_status %in% c("Closed", "Future School", "Inactive"))
+	left_join(school_membership, by = c("school_code"))
 
 # remove temporary variables
 rm(school_characteristics, school_info, school_locations, school_membership)
@@ -568,15 +765,15 @@ if (!file.exists("../original_data/block_groups.gpkg")) {
 if (!file.exists("../original_data/city_outlines.gpkg")) {
 	
 	# download city outlines
-	code_city_outlines <- lapply(city_data, function (x) {
+	code_city_outlines <- map_df(cities$name, function (x) {
 		# places() from tigris
 		places(
-			state = x$FIPS_code,
+			state = cities$fips[cities$name == x],
 			cb = FALSE,
 			year = 2016,
 			class = "sf"
 		) %>% 
-			filter(NAME == x$name)
+			filter(NAME == x)
 	}) %>% 
 		reduce(rbind) %>% 
 		st_transform(4326) %>% 
@@ -620,12 +817,59 @@ blockgroup_outlines <- blockgroup_outlines %>%
 ```
 
 
-# School locations
+# Private school data
+
+These data are from https://nces.ed.gov/surveys/pss/pssdata.asp and include 
+lat/lon pairs, so we don't have to add geographic information separately
+
+```{r}
+# load private school data
+private_schools <- read_csv("../original_data/pss1516_pu.csv") %>% 
+	# select(-matches("^repw")) %>% 
+	select(
+		school_code = ppin,
+		school_name = pinst,
+		school_level = level,
+		school_in_home = p425,
+		students = numstuds,
+		state = pstansi,
+		county = pcnty,
+		latitude = latitude16,
+		longitude = longitude16,
+	) %>% 
+	mutate(
+		school_level = case_when(
+			school_level == 1 ~ "Primary",
+			school_level == 2 ~ "Middle",
+			school_level == 3 ~ "High",
+			school_level == 4 ~ "Other",
+			TRUE ~ "Not known"
+		), 
+		county = paste0(str_pad(state, 2, "left", "0"), county)
+	) %>% 
+	# filter out schools that are located in a private residence or that are not
+	# in a county with a CODE city in it, or that 
+	filter(school_in_home == 2 & county %in% code_counties) %>% 
+	select(-state, -school_in_home)
+
+# add private school data to public school data
+school_data <- bind_rows(
+	list("public" = school_data, "private" = private_schools), 
+	.id = "public_school"
+)
+
+# clean up
+rm(private_schools)
+```
+
+
+# Filter by location and add census identifiers
 
 ```{r}
 # convert school data to an SF object
 school_data <- st_as_sf(school_data, coords = c("longitude", "latitude")) %>% 
 	st_set_crs(4326)
+
 # determine if each school is in a CODE city
 school_data <- school_data %>% 
 	st_join(code_city_outlines) %>% 
@@ -638,6 +882,7 @@ school_data <- school_data %>%
 	st_join(blockgroup_outlines) %>% 
 	select(-area_land, -area_water)
 ```
+
 
 # Land cover data
 
@@ -663,7 +908,8 @@ land_cover_data <- dir("../original_data", pattern = "^land_cover_",
 ```
 
 We only need to know what proportion of the land in each blockgroup is developed 
-but not open space, i.e. in [NLCD categories](https://www.mrlc.gov/nlcd11_leg.php) 22, 23 and 24.
+but not open space, i.e. in [NLCD categories](https://www.mrlc.gov/nlcd11_leg.php)
+22, 23 and 24.
 
 ```{r}
 land_cover_data <- land_cover_data %>% 
@@ -689,7 +935,7 @@ teenagers.
 if (!file.exists("../original_data/acs_data.csv")) {
 	
 	# download 5-year ACS estimates at block-group level
-	acs_data <- lapply(code_counties, function (x) {
+	acs_data <- map_df(code_counties, function (x) {
 		# get_acs() from tidycensus
 		get_acs(
 			geography = "block group",
@@ -730,11 +976,13 @@ if (!file.exists("../original_data/acs_data.csv")) {
 			county = as.integer(str_sub(x, 3)),
 			key = census_api_key
 		)
-	}) %>% 
-		reduce(rbind)
+	}, .id = "county")
 	
 	# save a copy of the raw ACS data to a file
 	write_csv(acs_data, "../original_data/acs_data.csv", na = "")
+	
+	# clean up
+	rm(census_api_key)
 	
 } else {
 	
@@ -755,6 +1003,7 @@ acs_data <- acs_data %>% mutate(
 	-ends_with("M"), # remove all columns containing margins of error
 	-GEOID1, -NAME1 # remove duplicate name and GEOID columns at end of data
 )
+
 # convert ACS variables to variables needed for analysis
 acs_data <- acs_data %>% 
 	mutate(
@@ -780,6 +1029,7 @@ acs_data <- acs_data %>%
 	# value NA once scale() is called, below. We will therefore filter out these
 	# cases now
 	filter_at(vars(starts_with("perc_"), median_income), all_vars(!is.na(.)))
+
 # scale and center variables
 acs_data <- acs_data %>% 
 	mutate(
@@ -790,6 +1040,7 @@ acs_data <- acs_data %>%
 		perc_moved_sc = scale_vector(perc_moved),
 		perc_teen_sc = scale_vector(perc_teen)
 	)
+
 # calculate indices and remove unnecessary variables
 acs_data <- acs_data %>% 
 	mutate(
@@ -805,8 +1056,7 @@ acs_data <- acs_data %>%
 	) %>% 
 	select(geoid = GEOID, name = NAME, pop_total, starts_with("index_"),
 				 perc_teen_sc)
-# clean up
-rm(census_api_key)
+
 ```
 
 
@@ -817,16 +1067,44 @@ group, converting variables to counts if necessary.
 
 ## Calculate crime counts
 
-The crime data already contain the information necessary to construct block group ID codes, so there is no need to carry out any spatial operations.
+The crime data already contain the information necessary to construct block 
+group ID codes, so there is no need to carry out any spatial operations.
 
 ```{r}
 # set up list of crime types of interest
 crime_types <- list(
 	"assault" = c("13A", "13B", "13C"),
-	"robbery" = c("120")
+	"robbery" = c("12A") # only personal robbery
 )
+
+count_crimes <- function (
+	type, # a string identifying the crime type
+	data, # a tibble of data
+	filters = NULL # a quo() object of dplyr filters
+) {
+	
+	data %>% 
+		filter(offense_code %in% crime_types[[type]]) %>% {
+			
+			ifelse(!is.null(filters), filter(., !!filters), .)
+			
+		} %>% 
+		mutate(
+			crime_type = paste("crimes", type, sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n()) %>% 
+		ungroup()
+	
+}
+
+crime_counts <- map_df(names(crime_types), count_crimes, data = crime_data,
+											 filters = quo())
+
 # count crimes in each block group
-crime_counts <- lapply(names(crime_types), function (x) {
+crime_counts <- map_df(names(crime_types), function (x) {
 	crime_data %>% 
 		filter(offense_code %in% crime_types[[x]]) %>% 
 		mutate(
@@ -835,11 +1113,13 @@ crime_counts <- lapply(names(crime_types), function (x) {
 														 census_blockgroup)
 		) %>% 
 		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
+		summarise(count = n()) %>% 
+		ungroup()
 }) %>% 
-	reduce(rbind) %>% 
 	spread(crime_type, count)
-crime_counts_term <- lapply(names(crime_types), function (x) {
+
+# count crimes on school days, i.e. weekdays that were not school holidays
+crime_counts_term <- map_df(names(crime_types), function (x) {
 	crime_data %>% 
 		filter(offense_code %in% crime_types[[x]] & school_day == TRUE) %>% 
 		mutate(
@@ -850,9 +1130,10 @@ crime_counts_term <- lapply(names(crime_types), function (x) {
 		group_by(crime_type, blockgroup_id) %>% 
 		summarise(count = n())
 }) %>% 
-	reduce(rbind) %>% 
 	spread(crime_type, count)
-crime_counts_hldy <- lapply(names(crime_types), function (x) {
+
+# count crimes on weekdays that *were* school holidays
+crime_counts_hldy <- map_df(names(crime_types), function (x) {
 	crime_data %>% 
 		filter(offense_code %in% crime_types[[x]] & school_day == FALSE) %>% 
 		mutate(
@@ -863,9 +1144,10 @@ crime_counts_hldy <- lapply(names(crime_types), function (x) {
 		group_by(crime_type, blockgroup_id) %>% 
 		summarise(count = n())
 }) %>% 
-	reduce(rbind) %>% 
 	spread(crime_type, count)
-crime_counts_timet <- lapply(names(crime_types), function (x) {
+
+# count crimes on weekdays between 0800 and 1659
+crime_counts_timet <- map_df(names(crime_types), function (x) {
 	crime_data %>% 
 		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
 					 	school_time == TRUE) %>% 
@@ -877,9 +1159,10 @@ crime_counts_timet <- lapply(names(crime_types), function (x) {
 		group_by(crime_type, blockgroup_id) %>% 
 		summarise(count = n())
 }) %>% 
-	reduce(rbind) %>% 
 	spread(crime_type, count)
-crime_counts_timef <- lapply(names(crime_types), function (x) {
+
+# count crimes on weekdays between 1700 and 0759
+crime_counts_timef <- map_df(names(crime_types), function (x) {
 	crime_data %>% 
 		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
 					 	school_time == FALSE) %>% 
@@ -891,7 +1174,36 @@ crime_counts_timef <- lapply(names(crime_types), function (x) {
 		group_by(crime_type, blockgroup_id) %>% 
 		summarise(count = n())
 }) %>% 
-	reduce(rbind) %>% 
+	spread(crime_type, count)
+
+# count crimes in public places
+crime_counts_public <- map_df(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
+					 	public_location == TRUE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "public", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
+	spread(crime_type, count)
+
+# count crimes in dwellings
+crime_counts_private <- map_df(names(crime_types), function (x) {
+	crime_data %>% 
+		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
+					 	public_location == FALSE) %>% 
+		mutate(
+			crime_type = paste("crimes", x, "private", sep = "_"),
+			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
+														 census_blockgroup)
+		) %>% 
+		group_by(crime_type, blockgroup_id) %>% 
+		summarise(count = n())
+}) %>% 
 	spread(crime_type, count)
 
 # attach crime counts to block groups
@@ -901,6 +1213,8 @@ blockgroup_data <- blockgroup_outlines %>%
 	left_join(crime_counts_hldy, by = c("geoid" = "blockgroup_id")) %>% 
 	left_join(crime_counts_timet, by = c("geoid" = "blockgroup_id")) %>% 
 	left_join(crime_counts_timef, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_public, by = c("geoid" = "blockgroup_id")) %>% 
+	left_join(crime_counts_private, by = c("geoid" = "blockgroup_id")) %>% 
 	mutate_at(vars(starts_with("crimes_")), funs(ifelse(is.na(.), 0, .)))
 
 # remove unnecessary objects
@@ -911,24 +1225,58 @@ rm(crime_data, crime_counts, crime_counts_hldy, crime_counts_term,
 ## Calculate school and student counts
 
 At this stage we only include high schools and middle schools (i.e. 
-approximately students aged 10 and over).
+approximately students aged 10 and over). We will exclude very-small schools 
+(fewer than 10 students).
 
 ```{r}
 # count schools and students in each block group
 school_counts <- school_data %>% 
 	st_set_geometry(NULL) %>% 
-	filter(school_level %in% c("High", "Middle")) %>% 
-	mutate(blockgroup_id = paste0(state, county, census_tract, 
-																census_block_group)) %>% 
+	filter(
+		school_level %in% c("High", "Middle"),
+		!school_status %in% c("Future School", "Inactive"),
+		students < 10
+	) %>% 
+	mutate(
+		blockgroup_id = paste0(state, county, census_tract, census_block_group),
+		new_school = ifelse(school_status == "New", TRUE, FALSE),
+		closed_school = ifelse(school_status == "Closed", TRUE, FALSE)
+	) %>% 
 	group_by(blockgroup_id) %>% 
-	summarise(school_count = n(), school_students = sum(students))
+	summarise(
+		school_count = n(), 
+		school_students = sum(students),
+		new_schools = sum(new_school),
+		closed_schools = sum(closed_school),
+		closed_school_students = sum(ifelse(closed_school == TRUE, 0, students))
+	) %>% 
+	mutate(
+		# identify blockgroups with only closed or only new schools, since these
+		# will be used in the time-series models
+		old_new = case_when(
+			school_count == new_schools ~ "only new",
+			school_count == closed_schools ~ "only old",
+			TRUE ~ NA_character_
+		),
+		# remove closed schools from count of current schools
+		school_count = school_count - closed_schools,
+		# removed students listed at closed schools from student counts, to prevent
+		# double counting since many of these students will now be at other schools
+		# in the same area
+		school_students = school_students - closed_school_students
+	) %>% 
+	select(-closed_school_students)
+
 # attach school counts to block groups
 blockgroup_data <- blockgroup_data %>% 
 	left_join(school_counts, by = c("geoid" = "blockgroup_id")) %>% 
 	mutate_at(vars(starts_with("school_")), funs(ifelse(is.na(.), 0, .))) %>% 
 	mutate(school = ifelse(school_count > 0, TRUE, FALSE))
+
+# remove unnecessary objects
 rm(school_counts, school_data)
 ```
+
 
 ## Add demographic data
 
@@ -944,6 +1292,7 @@ blockgroup_data <- blockgroup_data %>%
 		funs(ifelse(is.na(.), 0, .))
 	) %>% 
 	filter(area_land > 0)
+
 rm(acs_data)
 ```
 
@@ -952,6 +1301,7 @@ rm(acs_data)
 ```{r}
 blockgroup_data <- blockgroup_data %>% 
 	left_join(land_cover_data, by = c("geoid" = "blockgroup"))
+
 rm(land_cover_data)
 ```
 
@@ -986,61 +1336,105 @@ mean count of crimes in queen-adjacent cells.
 ```{r}
 # create list-column of cells that intersect each cell
 # This is done by calling st_intersects() with only one argument, which 
-# intersects the layer with itself. Note that since a cell intersects with
-# itself, we need to account for this when calculating the mean crime count for
-# neighbouring cells
-blockgroup_data$adj <- st_intersects(blockgroup_data)
+# intersects the layer with itself. The map function is needed because 
+# st_intersects() returns a sparse geometry binary predicate list (SGBP) which
+# is similar to a matrix and so cannot be stored in a tibble (map returns a 
+# normal list)
+blockgroup_data$adj <- st_intersects(blockgroup_data) %>% map(function (x) x)
 
-blockgroup_lags <- blockgroup_data %>% 
-	# slice(1:10) %>% 
-	st_intersects() %>% {
-		lapply(1:length(.), function (x, y) {
-			lapply(
-				grep("^crimes_", names(blockgroup_data), value = TRUE),
-				function (z) {
-					# extract values from data
-					vals <- blockgroup_data %>%
-						st_set_geometry(NULL) %>%
-						select(z)
-					# get values for neighbours
-					nb_vals <- vals %>%
-						slice(y[[x]]) %>%
-						unlist()
-					# calculate lag
-					lag_val <- (sum(nb_vals) - unlist(slice(vals, x))) / (length(nb_vals) - 1)
-					
-					# set lag to zero for cells with no neighbours
-					if (is.na(lag_val)) {
-						lag_val = 0
-					}
-					# cat("Row:", x, "\tColumn:", z, "\tNeighbours:", y[[x]], "\tLag:", 
-					#       lag_val, "\n")
-					
-					names(lag_val) <- paste(z, "lag", sep = "_")
-					lag_val
-				}
-			) %>% unlist()
-		}, y = .) } %>% 
-	reduce(rbind) %>%
-	as_tibble()
+# for each crime count on each row, calculate the mean of that count in
+# surrounding cells
+blockgroup_lags <- grep("^crimes_", names(blockgroup_data), value = TRUE) %>% 
+	# add a name attribute for each value that is equal to the value + "_lag"
+  { magrittr::set_names(., paste0(., "_lag")) } %>% 
+	# iterate over each variable, combining the results by column into a tibble
+	map_dfc(function (variable) {
+		
+		# get counts of crime type
+		vals <- blockgroup_data %>% 
+			select(variable) %>% 
+			st_set_geometry(NULL)
+		
+		# for each row, calculate lag
+		map_dbl(1:nrow(vals), function (i) {
+			
+			# get values for neighbours
+			nb_vals <- slice(vals, blockgroup_data$adj[[i]]) %>% unlist()
+			
+			# calculate lag
+			# Note that since a cell intersects with itself, we need to account for 
+			# this when calculating the mean crime count for neighbouring cells
+			lag_val <- (sum(nb_vals) - unlist(slice(vals, i))) / (length(nb_vals) - 1)
+			
+			# set lag to zero for cells with no neighbours
+			if (is.na(lag_val)) {
+				lag_val = 0
+			}
+			
+			# return lag value
+			unname(lag_val)
+			
+		})
+		
+	})
+
+# blockgroup_lags <- blockgroup_data %>% 
+# 	# slice(1:10) %>% 
+# 	st_intersects() %>% {
+# 		map_df(1:length(.), function (x, y) {
+# 			lapply(
+# 				grep("^crimes_", names(blockgroup_data), value = TRUE),
+# 				function (z) {
+# 					
+# 					# extract values from data
+# 					vals <- blockgroup_data %>%
+# 						st_set_geometry(NULL) %>%
+# 						select(z)
+# 
+# 					# get values for neighbours
+# 					nb_vals <- vals %>%
+# 						slice(y[[x]]) %>%
+# 						unlist()
+# 
+# 					# calculate lag
+# 					lag_val <- (sum(nb_vals) - unlist(slice(vals, x))) / (length(nb_vals) - 1)
+# 					
+# 					# set lag to zero for cells with no neighbours
+# 					if (is.na(lag_val)) {
+# 						lag_val = 0
+# 					}
+# 
+# 					# cat("Row:", x, "\tColumn:", z, "\tNeighbours:", y[[x]], "\tLag:", 
+# 					#       lag_val, "\n")
+# 					
+# 					names(lag_val) <- paste(z, "lag", sep = "_")
+# 					lag_val
+# 					
+# 				}
+# 			) %>% unlist()
+# 		}, y = .)
+# 	}
 
 # join lags to existing data
 blockgroup_data <- bind_cols(blockgroup_data, blockgroup_lags)
+
+# clean up
 rm(blockgroup_lags)
 ```
 
 # Export data and clean up
 
 ```{r}
-# remove list and geometry columns
-blockgroup_data <- blockgroup_data %>% 
+blockgroup_data %>% 
+	# remove list and geometry columns
 	select(-adj) %>% 
-	st_set_geometry(NULL)
-# write file
-# this uses write.csv() because of a bug with write_csv()
-write.csv(blockgroup_data, "../analysis_data/blockgroup_data.csv", na = "", 
-					row.names = FALSE)
-# rm(blockgroup_data, blockgroup_outlines, city_data, code_city_outlines, 
-#    code_counties)
+	st_set_geometry(NULL) %>% 
+	# write file
+	# this uses write.csv() because of a bug with write_csv(), which unfortunately
+	# means we can't automatically GZ compress the file
+	write.csv("../analysis_data/blockgroup_data.csv", na = "", row.names = FALSE)
+
+rm(blockgroup_data, blockgroup_outlines, cities, code_city_outlines,
+   code_counties)
 ```
 

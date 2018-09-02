@@ -5,6 +5,22 @@ output:
 ---
 
 
+# Hypotheses
+
+We wish to test five hypotheses relating to how routine activities of school
+students influence crime in surrounding areas. Specifically, if school students'
+activities cause increases in crime, we would expect:
+
+  * high schools to be associated with more crime on school weekdays but not on
+    vacation weekdays,
+  * high schools to be associated with more crime during the daytime but not at
+    night,
+  * high schools to be associated with more crime on streets and against some
+    types of business but not more crimes in dwellings,
+  * any effect of high schools on crime to appear and disappear in an area as
+    old schools close and new schools open
+
+
 # Read data
 
 The data are already in the required format because data cleaning has been done,
@@ -187,7 +203,7 @@ that the effect of including schools as a variable can be identified separately.
 This also includes the lag of crime, since we can expect the crime counts to be
 spatial autocorrelated.
 
-We will use `update()` whenver possible, so that changes to one model are
+We will use `update()` whenever possible, so that changes to one model are
 reflected in subsequent models and to prevent potentially error-causing repeat
 keying of variable names.
 
