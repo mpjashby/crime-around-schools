@@ -7,18 +7,16 @@ output:
 
 # Hypotheses
 
-We wish to test five hypotheses relating to how routine activities of school
+We wish to test hypotheses relating to how routine activities of school
 students influence crime in surrounding areas. Specifically, if school students'
 activities cause increases in crime, we would expect:
 
-  * high schools to be associated with more crime on school weekdays but not on
-    vacation weekdays,
-  * high schools to be associated with more crime during the daytime but not at
-    night,
-  * high schools to be associated with more crime on streets and against some
-    types of business but not more crimes in dwellings,
-  * any effect of high schools on crime to appear and disappear in an area as
-    old schools close and new schools open
+  * H1: high schools to be associated with more crime on school weekdays but not 
+    on vacation weekdays,
+  * H2: high schools to be associated with more crime during the daytime but not 
+    at night,
+  * H3: high schools to be associated with more crime on streets and against 
+    some types of business but not more crimes in dwellings,
 
 
 # Read data
@@ -27,7 +25,7 @@ The data are already in the required format because data cleaning has been done,
 so they can just be read directly from the CSV file.
 
 ```{r}
-data <- read_csv("../analysis_data/blockgroup_data.csv", col_types = cols(
+data <- read_csv("../analysis_data/blockgroup_data.csv.gz", col_types = cols(
 	.default = col_double(),
 	geoid = col_character(),
   state = col_integer(),
@@ -35,18 +33,110 @@ data <- read_csv("../analysis_data/blockgroup_data.csv", col_types = cols(
   census_tract = col_character(),
   census_block_group = col_integer(),
   city_name = col_character(),
-  crimes_assault = col_integer(),
-  crimes_robbery = col_integer(),
-  crimes_assault_term = col_integer(),
-  crimes_robbery_term = col_integer(),
-  crimes_assault_hldy = col_integer(),
-  crimes_robbery_hldy = col_integer(),
+  count = col_integer(),
+	crime_type = col_factor(levels = NULL), # levels = NULL gets levels from data
+	school_day = col_logical(),
+	school_time = col_logical(),
+	public_location = col_character(),
   school_count = col_integer(),
   school_students = col_integer(),
 	school = col_logical(),
-  density_class = col_character()
-))
+	pop_total = col_integer(),
+  density_class = col_factor(levels = NULL)
+)) %>% 
+	mutate_at(vars(starts_with("land_cover_prop_")), ~ifelse(. > 1, 1, .)) %>% 
+	glimpse()
 ```
+
+
+# Check data
+
+We can check in detail that the data meets our expectations. This is done in 
+this file rather than the data cleaning file in case any problems have been
+introduced while saving and loading the data as a CSV.
+
+```{r}
+data %>% 
+	
+	# characters
+	assert(is.character, geoid, county, census_tract) %>% 
+	assert(not_na, geoid, county, census_tract) %>% 
+	print_comment("👍 geoid, county and census_tract are characters with no NA",
+								"values") %>% 
+
+	# characters with specific values
+	assert(is.character, city_name) %>% 
+	assert(in_set(cities$name), city_name) %>% 
+	assert(not_na, city_name) %>% 
+	print_comment("👍 city_name is a character, all values are valid CODE cities",
+								"with no NA values") %>% 
+	assert(is.character, public_location) %>% 
+	assert(in_set("public", "private", "other"), public_location) %>% 
+	# assert(not_na, public_location) %>% 
+	print_comment("👍 public_location is a character, all values are valid with",
+								"no NA values") %>% 
+
+	# two-digit integers
+	assert(is.integer, state) %>% 
+	assert(within_bounds(0, 99), state) %>% 
+	assert(not_na, state) %>% 
+	print_comment("👍 state is a two-digit positive integer with no NA values") %>% 
+
+	# one-digit positive integers
+	assert(is.integer, census_block_group) %>% 
+	assert(within_bounds(0, 9), census_block_group) %>% 
+	assert(not_na, census_block_group) %>% 
+	print_comment("👍 census_block_group is a one-digit positive integer with",
+								"no NA values") %>% 
+	
+	# positive integers
+	assert(is.integer, count, school_count, school_students, pop_total) %>% 
+	assert(within_bounds(0, Inf), count, school_count, school_students, 
+				 pop_total) %>% 
+	assert(not_na, count, school_count, school_students, pop_total) %>% 
+	print_comment("👍 count, school_count, school-stude_ts and pop_total are",
+								"positive integers with no NA values") %>% 
+
+	# doubles
+	assert(is.double, index_disadvantage, index_mobility, index_ethnic, 
+				 perc_teen_sc) %>% 
+	assert(not_na, index_disadvantage, index_mobility, index_ethnic, 
+				 perc_teen_sc) %>% 
+	print_comment("👍 index_disadvantage, index_mobility, index_ethnic and",
+								"perc_teen_sc are doubles with no NA values") %>% 
+
+	# doubles between zero and one
+	assert(is.double, prop_overlap, prop_developed, land_cover_prop_22, 
+				 land_cover_prop_23, land_cover_prop_24) %>% 
+	assert(within_bounds(0, 1), prop_overlap, prop_developed, land_cover_prop_22, 
+				 land_cover_prop_23, land_cover_prop_24) %>% 
+	print_comment("👍 prop_overlap, prop_developed, land_cover_prop_22,",
+								"land_cover_prop_23 and land_cover_prop_24 are doubles between",
+								"0 and 1 with no NA values") %>% 
+
+	# positive doubles
+	assert(is.double, area_land, area_water, pop_density, count_lag) %>% 
+	assert(within_bounds(0, Inf), area_land, area_water, pop_density, 
+				 count_lag) %>% 
+	assert(not_na, area_land, area_water, pop_density, count_lag) %>% 
+	print_comment("👍 area_land, area_water, pop_density and count_lag are",
+								"positive doubles with no NA values") %>% 
+
+	# factors
+	assert(is.factor, crime_type, density_class) %>% 
+	# assert(not_na, crime_type, density_class) %>% 
+	print_comment("👍 crime_type is a factor with no NA values") %>% 
+
+	# logicals
+	assert(is.logical, school_day, school_time, school) %>% 
+	# assert(not_na, school_day, school_time, school) %>% 
+	print_comment("👍 school_day, school_time and school are logical with no NA",
+								"values") %>% 
+
+	print_comment("") %>% 
+	glimpse()
+```
+
 
 
 # Filter data
@@ -55,7 +145,8 @@ Since our focus is on the association between school location and neighbourhood
 crime, we are primarily interested in residential areas. Also studying 
 industrial zones, etc would substantially increase the variables that needed to
 be controlled in the model. For this reason, we will exclude any blockgroup with
-a population of zero.
+a population of zero. In particular, this removes LAX, O'Hare and Rikers Island,
+which could otherwise be problematic.
 
 ```{r}
 data <- data %>% filter(pop_total > 0)
@@ -71,26 +162,19 @@ visually and by calculating the ratio of the variance of the dependent variable
 to the mean.
 
 ```{r}
-data %>% 
-	select(starts_with("crimes_")) %>% 
-	select(-ends_with("_lag")) %>% 
-	psych::multi.hist()
+hist(data$count, breaks = 100)
 ```
 
-All the histograms suggest Poisson-distributed response variables. We can check
-the var/mean ratio to see if they are over-dispersed.
+The histograms suggest a Poisson-distributed response variable. We can check
+the var/mean ratio to see if it is over-dispersed.
 
 ```{r}
-data %>% 
-	select(starts_with("crimes_")) %>% 
-	select(-ends_with("_lag")) %>% 
-	summarise_all(~ var(.) / mean(.)) %>% 
-	gather()
+var(data$count) / mean(data$count)
 ```
 
-We can see the variance much greater than the mean in all cases, so (as 
-expected) all the response variables are overdispersed. Thus a NB model approach
-looks reasonable, subject to tests of the resulting models.
+We can see the variance is much greater than the mean, so (as expected) the 
+response variable is overdispersed. Thus a NB model approach looks reasonable, 
+subject to tests of the resulting models.
 
 
 # Transform variables
@@ -107,7 +191,6 @@ data <- data %>%
 	mutate(
 		pop_total_sc = as.numeric(scale(pop_total, scale = TRUE, center = TRUE))
 	)
-	# mutate_at(vars(ends_with("_lag")), funs(sc = scale(.)))
 ```
 
 By default, R uses the alphabetically first level of a factor as the reference
@@ -121,21 +204,6 @@ to factors.
 # 	mutate(
 # 		city_name = fct_relevel(city_name, "New York")
 # 	)
-```
-
-Initial analysis showed three blockgroups (containing Rikers Island jail, and
-O'Hare and LAX airports) could be influencing the model. All these blockgroups
-have zero population but high crime. Since no suitable dataset exists to allow
-us to model jails (prisons can be obtained from the USGS National Map, but not
-jails), we will simply exclude these three blockgroups for now.
-
-```{r}
-# data <- data %>% 
-# 	filter(!geoid %in% c(
-# 		"060379800281", # LAX
-# 		"170319800001", # O'Hare
-# 		"360050001001"  # Rikers Island
-# 	))
 ```
 
 
@@ -160,14 +228,49 @@ this is necessary, we can test whether places with schools are different in
 these respects to places without schools.
 
 ```{r}
-lapply(c("index_disadvantage", "index_mobility", "index_ethnic", 
-				 "perc_teen_sc", "prop_developed"), function (x) {
-	wilcox.test(as.formula(paste(x, "~ school")), data = data) %>% tidy() %>% 
-		mutate(test = paste("Wilcoxcon: ", x, "~ school"))
-}) %>% bind_rows() %>% 
+map_df(
+	c("index_disadvantage", "index_mobility", "index_ethnic", "perc_teen_sc", 
+		"prop_developed"), 
+	function (x) {
+		wilcox.test(as.formula(paste(x, "~ school")), data = data) %>% 
+			tidy() %>% 
+			mutate(test = paste("Wilcoxcon: ", x, "~ school"))
+	}) %>%
 	select(test, statistic, p.value, alternative) %>% 
 	mutate(p.value = round(p.value, digits = 3))
 ```
+
+For all but the index of disadvantage, these variables are associated with the
+response variable. For this reason we will include them in the model for now.
+
+
+# Build models
+
+We can test H1 and H2 together, because data to test them are available in all
+cities. The data for this model require collapsing of rows so that there are not
+separate rows for offenses in public/private places.
+
+```{r}
+data_h1 <- data %>% 
+	group_by(geoid, crime_type, school_day, school_time) %>% 
+	summarise(
+		count = sum(count),
+		lagged_crimes = sum(lagged_crimes),
+		school_count = first(school_count),
+		school_students = first(school_students),
+		pop_total = first(pop_total),
+		pop_total_sc = first(pop_total_sc),
+		index_disadvantage = first(index_disadvantage),
+		index_mobility = first(index_mobility),
+		index_ethnic = first(index_ethnic),
+		perc_teen_sc = first(perc_teen_sc),
+		prop_developed = first(prop_developed)
+	) %>% 
+	glimpse()
+```
+
+
+H3 must be tested separately
 
 
 # Build models

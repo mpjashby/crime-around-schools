@@ -64,19 +64,6 @@ cities <- tribble(
   "Tucson",         "04", "tus", "AZ",
   "Virginia Beach", "51", "vib", "VA"
 )
-
-# city_data <- list(
-# 	'Chicago' = list('FIPS_code' = '17', 'name' = 'Chicago', 'abbr' = 'IL'),
-# 	'Detroit' = list('FIPS_code' = '26', 'name' = 'Detroit', 'abbr' = 'MI'),
-# 	'FW' = list('FIPS_code' = '48', 'name' = 'Fort Worth', 'abbr' = 'TX'),
-# 	'KC' = list('FIPS_code' = "29", 'name' = "Kansas City", "abbr" = "MO"),
-# 	'LA' = list('FIPS_code' = '06', 'name' = 'Los Angeles', 'abbr' = 'CA'),
-# 	'Louisville' = list('FIPS_code' = '21', 'name' = 'Louisville', 'abbr' = 'KY'),
-# 	'NYC' = list('FIPS_code' = '36', 'name' = 'New York', 'abbr' = 'NY'),
-# 	'SF' = list('FIPS_code' = '06', 'name' = 'San Francisco', 'abbr' = 'CA'),
-# 	"Tucson" = list('FIPS_code' = "04", 'name' = 'Tucson', 'abbr' = 'AZ'),
-# 	"VB" = list("")
-# )
 ```
 
 
@@ -138,9 +125,13 @@ if (!file.exists("../original_data/crime_data.csv.gz")) {
 
 # add whether offence occurred (approximately) during school hours
 crime_data <- crime_data %>% mutate(
-	school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 16, 
+	school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 17, 
 											 TRUE, FALSE)
-)
+) %>% 
+	# check that no columns except location_type and location_category contain NA
+	# values
+	assert(not_na, everything(), -location_type, -location_category) %>% 
+	glimpse()
 ```
 
 
@@ -542,7 +533,9 @@ school_holidays <- map_df(names(school_holidays), function (x) {
 			FALSE, TRUE))
 
 	}) %>% 
-	arrange(date, city)
+	arrange(date, city) %>% 
+	# check that all dates are within the expected range
+	verify(date >= ymd("2013-01-01") & date <= ymd("2017-12-31"))
 
 # show table of count of school days each year
 school_holidays %>% 
@@ -602,10 +595,13 @@ rm(school_holidays)
 crime_data <- crime_data %>% 
 	mutate(public_location = case_when(
 		location_category %in% c("leisure", "open space", "retail", "street",
-														 "transportation") ~ TRUE,
-		location_category == "residence" ~ FALSE,
-		TRUE ~ NA
-	))
+														 "transportation") ~ "public",
+		location_category == "residence" ~ "private",
+		TRUE ~ "other"
+	)) %>% 
+	assert(in_set("public", "private", "other", allow.na = FALSE), 
+				 public_location) %>% 
+	glimpse()
 ```
 
 
@@ -659,7 +655,8 @@ school_info <- read_csv("../original_data/ccd_sch_029_1516_w_1a_011717.csv") %>%
 			virtual_school == "Yes" ~ TRUE,
 			TRUE ~ NA
 		)
-	)
+	) %>% 
+	glimpse()
 
 # Import school characteristics
 school_characteristics <- read_csv("../original_data/ccd_sch_129_1516_w_1a_011717.csv") %>% 
@@ -679,14 +676,16 @@ school_characteristics <- read_csv("../original_data/ccd_sch_129_1516_w_1a_01171
 			shared_time_school == "Yes" ~ TRUE,
 			TRUE ~ NA
 		)
-	)
+	) %>% 
+	glimpse()
 
 # Import student numbers
 school_membership <- read_csv("../original_data/ccd_sch_052_1516_w_1a_011717.csv") %>% 
 	select(
 		school_code = NCESSCH,
 		students = TOTAL
-	)
+	) %>% 
+	glimpse()
 ```
 
 ```{r}
@@ -703,7 +702,8 @@ school_locations <- readxl::read_excel("../original_data/EDGE_GEOCODE_PUBLICSCH_
 		county = CNTY15,
 		latitude = LAT1516,
 		longitude = LON1516
-	)
+	) %>% 
+	glimpse()
 
 # Merge and filter the data
 # The spatial data are on the left-hand side of the join because that will bring
@@ -712,7 +712,9 @@ school_locations <- readxl::read_excel("../original_data/EDGE_GEOCODE_PUBLICSCH_
 school_data <- school_locations %>% 
 	left_join(school_info, by = c("school_code")) %>% 
 	left_join(school_characteristics, by = c("school_code")) %>% 
-	left_join(school_membership, by = c("school_code"))
+	left_join(school_membership, by = c("school_code")) %>% 
+	mutate(students = ifelse(students < 0 | is.na(students), 0, students)) %>% 
+	glimpse()
 
 # remove temporary variables
 rm(school_characteristics, school_info, school_locations, school_membership)
@@ -722,11 +724,11 @@ rm(school_characteristics, school_info, school_locations, school_membership)
 # Geographic boundary files
 
 ```{r}
-# set cache folder
-tigris_cache_dir("original_data")
-readRenviron('~/.Renviron')
-
 if (!file.exists("../original_data/block_groups.gpkg")) {
+	
+	# set cache folder
+	tigris_cache_dir("original_data")
+	readRenviron('~/.Renviron')
 	
 	# download block group outlines for counties containing CODE cities
 	blockgroup_outlines <- lapply(code_counties, function (x) {
@@ -758,14 +760,17 @@ if (!file.exists("../original_data/block_groups.gpkg")) {
 } else {
 	
 	# load block group outlines
-	blockgroup_outlines <- st_read("../original_data/block_groups.gpkg")
+	blockgroup_outlines <- st_read("../original_data/block_groups.gpkg", 
+																 stringsAsFactors = FALSE)
 	
 }
+
+glimpse(blockgroup_outlines)
 
 if (!file.exists("../original_data/city_outlines.gpkg")) {
 	
 	# download city outlines
-	code_city_outlines <- map_df(cities$name, function (x) {
+	code_city_outlines <- lapply(cities$name, function (x) {
 		# places() from tigris
 		places(
 			state = cities$fips[cities$name == x],
@@ -801,9 +806,12 @@ if (!file.exists("../original_data/city_outlines.gpkg")) {
 } else {
 	
 	# read city outlines
-	code_city_outlines <- st_read("../original_data/city_outlines.gpkg")
+	code_city_outlines <- st_read("../original_data/city_outlines.gpkg", 
+																stringsAsFactors = FALSE)
 	
 }
+
+glimpse(code_city_outlines)
 
 # filter out block groups that are not at least partly within a CODE city
 blockgroup_outlines <- blockgroup_outlines %>% 
@@ -813,7 +821,27 @@ blockgroup_outlines <- blockgroup_outlines %>%
 # remove any block groups that are mostly outside city boundaries
 blockgroup_outlines <- blockgroup_outlines %>% 
 	add_overlap_area(code_city_outlines) %>% 
-	filter(prop_overlap > 0.5)
+	filter(prop_overlap > 0.5) %>% 
+	glimpse()
+
+# create list-column of blockgroups that intersect (i.e. have queen contiguity 
+# with) each blockgroup
+# This is done by calling st_intersects() with only one argument, which 
+# intersects the layer with itself. The map function is needed because 
+# st_intersects() returns a sparse geometry binary predicate list (SGBP) which
+# is similar to a matrix and so cannot be stored in a tibble (map returns a 
+# normal list). This works because intersecting the layer with itself produces
+# SGBPs each with only one dimension.
+blockgroup_outlines$adj <- st_intersects(blockgroup_outlines) %>% 
+	map(function (x) x)
+
+# the adjacency list consists of row numbers, which will not work with long-
+# format crime in which each blockgroup is represented by multiple rows. To deal
+# with this, we can create a corresponding list column of geoids
+blockgroup_outlines$adj_geoid <- map(1:nrow(blockgroup_outlines), function (i) {
+	blockgroup_outlines$geoid[blockgroup_outlines$adj[[i]]]
+}) %>% 
+	glimpse()
 ```
 
 
@@ -850,7 +878,8 @@ private_schools <- read_csv("../original_data/pss1516_pu.csv") %>%
 	# filter out schools that are located in a private residence or that are not
 	# in a county with a CODE city in it, or that 
 	filter(school_in_home == 2 & county %in% code_counties) %>% 
-	select(-state, -school_in_home)
+	select(-state, -school_in_home) %>% 
+	glimpse()
 
 # add private school data to public school data
 school_data <- bind_rows(
@@ -904,7 +933,8 @@ land_cover_data <- dir("../original_data", pattern = "^land_cover_",
 			select(-county)
 	}) %>% 
 	bind_rows() %>% 
-	rename_at(vars(-blockgroup), ~ paste0("land_cover_", .))
+	rename_at(vars(-blockgroup), ~ paste0("land_cover_", .)) %>% 
+	glimpse()
 ```
 
 We only need to know what proportion of the land in each blockgroup is developed 
@@ -919,7 +949,8 @@ land_cover_data <- land_cover_data %>%
 				 land_cover_prop_24) %>% 
 	mutate(
 		prop_developed = ifelse(prop_developed > 1, 1, prop_developed)
-	)
+	) %>% 
+	glimpse()
 ```
 
 
@@ -991,6 +1022,8 @@ if (!file.exists("../original_data/acs_data.csv")) {
 	
 }
 
+glimpse(acs_data)
+
 # sum variables where required
 acs_data <- acs_data %>% mutate(
 	eth_other = eth_not_hispanic - (eth_white + eth_black + eth_asian),
@@ -1055,7 +1088,8 @@ acs_data <- acs_data %>%
 													perc_eth_other^2),
 	) %>% 
 	select(geoid = GEOID, name = NAME, pop_total, starts_with("index_"),
-				 perc_teen_sc)
+				 perc_teen_sc) %>% 
+	glimpse()
 
 ```
 
@@ -1067,159 +1101,88 @@ group, converting variables to counts if necessary.
 
 ## Calculate crime counts
 
+For analysis, we need a tibble of crime counts for each blockgroup. To test the
+hypotheses, we need separate counts for the various states of school days,
+school times and location types.
+
 The crime data already contain the information necessary to construct block 
 group ID codes, so there is no need to carry out any spatial operations.
 
 ```{r}
-# set up list of crime types of interest
-crime_types <- list(
-	"assault" = c("13A", "13B", "13C"),
-	"robbery" = c("12A") # only personal robbery
-)
-
-count_crimes <- function (
-	type, # a string identifying the crime type
-	data, # a tibble of data
-	filters = NULL # a quo() object of dplyr filters
-) {
-	
-	data %>% 
-		filter(offense_code %in% crime_types[[type]]) %>% {
-			
-			ifelse(!is.null(filters), filter(., !!filters), .)
-			
-		} %>% 
-		mutate(
-			crime_type = paste("crimes", type, sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n()) %>% 
-		ungroup()
-	
-}
-
-crime_counts <- map_df(names(crime_types), count_crimes, data = crime_data,
-											 filters = quo())
-
-# count crimes in each block group
-crime_counts <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]]) %>% 
-		mutate(
-			crime_type = paste("crimes", x, sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n()) %>% 
-		ungroup()
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes on school days, i.e. weekdays that were not school holidays
-crime_counts_term <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == TRUE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "term", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes on weekdays that *were* school holidays
-crime_counts_hldy <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == FALSE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "hldy", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes on weekdays between 0800 and 1659
-crime_counts_timet <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
-					 	school_time == TRUE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "timet", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes on weekdays between 1700 and 0759
-crime_counts_timef <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
-					 	school_time == FALSE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "timef", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes in public places
-crime_counts_public <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
-					 	public_location == TRUE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "public", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
-
-# count crimes in dwellings
-crime_counts_private <- map_df(names(crime_types), function (x) {
-	crime_data %>% 
-		filter(offense_code %in% crime_types[[x]] & school_day == TRUE & 
-					 	public_location == FALSE) %>% 
-		mutate(
-			crime_type = paste("crimes", x, "private", sep = "_"),
-			blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract, 
-														 census_blockgroup)
-		) %>% 
-		group_by(crime_type, blockgroup_id) %>% 
-		summarise(count = n())
-}) %>% 
-	spread(crime_type, count)
+crime_counts <- crime_data %>% 
+	mutate(
+		crime_type = as.factor(case_when(
+			offense_code %in% c("13A", "13B", "13C") ~ "assault",
+			offense_code %in% c("12A") ~ "robbery", # only personal robbery
+			TRUE ~ NA_character_
+		)),
+		blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract,
+													 census_blockgroup)
+	) %>% 
+	# remove crimes that are of types we aren't studying, as well as crimes
+	# occurring at weekends (for which school_day and school_time are both set to
+	# NA)
+	filter(!is.na(crime_type), !is.na(school_day), !is.na(school_time)) %>% 
+	group_by(blockgroup_id, crime_type, school_day, school_time, 
+					 public_location) %>% 
+	summarise(count = n()) %>% 
+	ungroup() %>% 
+	assert(not_na, crime_type, school_day, school_time, public_location) %>% 
+	# complete() adds rows for blockgroups with zero counts in particular 
+	# categories
+	complete(blockgroup_id, crime_type, school_day, school_time, public_location, 
+					 fill = list(count = 0)) %>% 
+	glimpse()
 
 # attach crime counts to block groups
-blockgroup_data <- blockgroup_outlines %>%
-	left_join(crime_counts, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_term, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_hldy, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_timet, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_timef, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_public, by = c("geoid" = "blockgroup_id")) %>% 
-	left_join(crime_counts_private, by = c("geoid" = "blockgroup_id")) %>% 
-	mutate_at(vars(starts_with("crimes_")), funs(ifelse(is.na(.), 0, .)))
+# note that blockgroup_outlines must be on the left-hand side of this join,
+# otherwise blocks without any offenses wouldn't be joined to anything and would
+# be stripped from the data
+blockgroup_data <- left_join(blockgroup_outlines, crime_counts, 
+														 by = c("geoid" = "blockgroup_id")) %>% 
+	mutate(count = ifelse(is.na(count), 0, count)) %>% 
+	# we can remove rows relating to blockgroups that do not contain any land
+	filter(area_land > 0) %>% 
+	# we can remove the geometry column, since spatial operations are complete and
+	# it can complicate subsetting
+	st_set_geometry(NULL) %>% 
+	glimpse()
 
+# Blocks without any offenses will only appear once in blockgroup_data, and 
+# the values of crime_type, school_day, school_time and public_location will be
+# set to NA because there were no rows in crime_counts to join to 
+# blockgroup_outlines in the join directly above.
+# 1. Create a data frame of blocks with no crimes, with each block having a row
+# for each value of crime_type, school_day, school_time and public_location
+no_crime_blockgroups <- expand.grid(
+	geoid = unique_valid(blockgroup_data$geoid[is.na(blockgroup_data$crime_type)]),
+	crime_type = unique_valid(blockgroup_data$crime_type),
+	school_day = unique_valid(blockgroup_data$school_day),
+	school_time = unique_valid(blockgroup_data$school_time),
+	public_location = unique_valid(blockgroup_data$public_location),
+	stringsAsFactors = FALSE
+) %>% 
+	arrange(geoid)
+# 2. Add all the other columns to this data frame
+no_crime_blockgroups <- no_crime_blockgroups %>% 
+	left_join(select(blockgroup_data, -crime_type, -school_day, -school_time, 
+									 -public_location), by = "geoid") %>% 
+	glimpse()
+# 3. Add these rows to the original dataset, having first filtered out the rows
+# in it containing NA values
+blockgroup_data <- blockgroup_data %>% 
+	filter(!is.na(crime_type)) %>% 
+	bind_rows(no_crime_blockgroups)
+
+# we can now remove rows for public and private location types in cities for
+# which we don't have location types, to reduce the number of rows to be 
+# processed later on
+blockgroup_data <- blockgroup_data %>% 
+	filter(!(city_name %in% c("Detroit", "Kansas City", "San Francisco", "Tucson",
+														"Virginia Beach") & public_location != "other"))
+	
 # remove unnecessary objects
-rm(crime_data, crime_counts, crime_counts_hldy, crime_counts_term, 
-	 crime_counts_timef, crime_counts_timet, crime_types)
+rm(crime_data, crime_counts, no_crime_blockgroups)
 ```
 
 ## Calculate school and student counts
@@ -1234,44 +1197,26 @@ school_counts <- school_data %>%
 	st_set_geometry(NULL) %>% 
 	filter(
 		school_level %in% c("High", "Middle"),
-		!school_status %in% c("Future School", "Inactive"),
-		students < 10
+		!school_status %in% c("Closed", "Future School", "Inactive"),
+		students > 10
 	) %>% 
 	mutate(
-		blockgroup_id = paste0(state, county, census_tract, census_block_group),
-		new_school = ifelse(school_status == "New", TRUE, FALSE),
-		closed_school = ifelse(school_status == "Closed", TRUE, FALSE)
+		blockgroup_id = paste0(state, county, census_tract, census_block_group)
 	) %>% 
 	group_by(blockgroup_id) %>% 
 	summarise(
 		school_count = n(), 
-		school_students = sum(students),
-		new_schools = sum(new_school),
-		closed_schools = sum(closed_school),
-		closed_school_students = sum(ifelse(closed_school == TRUE, 0, students))
+		school_students = sum(students)
 	) %>% 
-	mutate(
-		# identify blockgroups with only closed or only new schools, since these
-		# will be used in the time-series models
-		old_new = case_when(
-			school_count == new_schools ~ "only new",
-			school_count == closed_schools ~ "only old",
-			TRUE ~ NA_character_
-		),
-		# remove closed schools from count of current schools
-		school_count = school_count - closed_schools,
-		# removed students listed at closed schools from student counts, to prevent
-		# double counting since many of these students will now be at other schools
-		# in the same area
-		school_students = school_students - closed_school_students
-	) %>% 
-	select(-closed_school_students)
+	glimpse()
 
 # attach school counts to block groups
 blockgroup_data <- blockgroup_data %>% 
 	left_join(school_counts, by = c("geoid" = "blockgroup_id")) %>% 
-	mutate_at(vars(starts_with("school_")), funs(ifelse(is.na(.), 0, .))) %>% 
-	mutate(school = ifelse(school_count > 0, TRUE, FALSE))
+	mutate_at(vars("school_count", "school_students"), 
+						funs(ifelse(is.na(.), 0, .))) %>% 
+	mutate(school = ifelse(school_count > 0, TRUE, FALSE)) %>% 
+	glimpse()
 
 # remove unnecessary objects
 rm(school_counts, school_data)
@@ -1283,7 +1228,7 @@ rm(school_counts, school_data)
 ```{r}
 blockgroup_data <- blockgroup_data %>% 
 	left_join(mutate(acs_data, geoid = str_pad(geoid, 12, pad = "0")), 
-						by = c("geoid")) %>% 
+						by = "geoid") %>% 
 	# st_set_geometry(NULL) %>% 
 	select(-name) %>% 
 	mutate_at(
@@ -1291,7 +1236,7 @@ blockgroup_data <- blockgroup_data %>%
 			"perc_teen_sc"),
 		funs(ifelse(is.na(.), 0, .))
 	) %>% 
-	filter(area_land > 0)
+	glimpse()
 
 rm(acs_data)
 ```
@@ -1300,7 +1245,8 @@ rm(acs_data)
 
 ```{r}
 blockgroup_data <- blockgroup_data %>% 
-	left_join(land_cover_data, by = c("geoid" = "blockgroup"))
+	left_join(land_cover_data, by = c("geoid" = "blockgroup")) %>% 
+	glimpse()
 
 rm(land_cover_data)
 ```
@@ -1334,107 +1280,44 @@ To account for spatial autocorrelation in crime counts, we will calculate the
 mean count of crimes in queen-adjacent cells.
 
 ```{r}
-# create list-column of cells that intersect each cell
-# This is done by calling st_intersects() with only one argument, which 
-# intersects the layer with itself. The map function is needed because 
-# st_intersects() returns a sparse geometry binary predicate list (SGBP) which
-# is similar to a matrix and so cannot be stored in a tibble (map returns a 
-# normal list)
-blockgroup_data$adj <- st_intersects(blockgroup_data) %>% map(function (x) x)
-
-# for each crime count on each row, calculate the mean of that count in
-# surrounding cells
-blockgroup_lags <- grep("^crimes_", names(blockgroup_data), value = TRUE) %>% 
-	# add a name attribute for each value that is equal to the value + "_lag"
-  { magrittr::set_names(., paste0(., "_lag")) } %>% 
-	# iterate over each variable, combining the results by column into a tibble
-	map_dfc(function (variable) {
-		
-		# get counts of crime type
-		vals <- blockgroup_data %>% 
-			select(variable) %>% 
-			st_set_geometry(NULL)
-		
-		# for each row, calculate lag
-		map_dbl(1:nrow(vals), function (i) {
-			
-			# get values for neighbours
-			nb_vals <- slice(vals, blockgroup_data$adj[[i]]) %>% unlist()
-			
-			# calculate lag
-			# Note that since a cell intersects with itself, we need to account for 
-			# this when calculating the mean crime count for neighbouring cells
-			lag_val <- (sum(nb_vals) - unlist(slice(vals, i))) / (length(nb_vals) - 1)
-			
-			# set lag to zero for cells with no neighbours
-			if (is.na(lag_val)) {
-				lag_val = 0
-			}
-			
-			# return lag value
-			unname(lag_val)
-			
-		})
-		
-	})
-
-# blockgroup_lags <- blockgroup_data %>% 
-# 	# slice(1:10) %>% 
-# 	st_intersects() %>% {
-# 		map_df(1:length(.), function (x, y) {
-# 			lapply(
-# 				grep("^crimes_", names(blockgroup_data), value = TRUE),
-# 				function (z) {
-# 					
-# 					# extract values from data
-# 					vals <- blockgroup_data %>%
-# 						st_set_geometry(NULL) %>%
-# 						select(z)
-# 
-# 					# get values for neighbours
-# 					nb_vals <- vals %>%
-# 						slice(y[[x]]) %>%
-# 						unlist()
-# 
-# 					# calculate lag
-# 					lag_val <- (sum(nb_vals) - unlist(slice(vals, x))) / (length(nb_vals) - 1)
-# 					
-# 					# set lag to zero for cells with no neighbours
-# 					if (is.na(lag_val)) {
-# 						lag_val = 0
-# 					}
-# 
-# 					# cat("Row:", x, "\tColumn:", z, "\tNeighbours:", y[[x]], "\tLag:", 
-# 					#       lag_val, "\n")
-# 					
-# 					names(lag_val) <- paste(z, "lag", sep = "_")
-# 					lag_val
-# 					
-# 				}
-# 			) %>% unlist()
-# 		}, y = .)
-# 	}
-
-# join lags to existing data
-blockgroup_data <- bind_cols(blockgroup_data, blockgroup_lags)
-
-# clean up
-rm(blockgroup_lags)
+# for each row, calculate the mean of the count of surrounding blockgroups
+blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
+	
+	# get crime counts for neighbouring blockgroups
+	# note the subset is wrapped in which() to prevent R adding rows of NA values
+	# as described at https://stackoverflow.com/a/37351328/8222654
+	nb_vals <- blockgroup_data$count[
+		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] &
+			blockgroup_data$crime_type == blockgroup_data$crime_type[[i]] &
+			blockgroup_data$school_day == blockgroup_data$school_day[[i]] &
+			blockgroup_data$school_time == blockgroup_data$school_time[[i]] &
+			blockgroup_data$public_location == blockgroup_data$public_location[[i]]
+		]
+	
+	# calculate lag as the arithmetic mean of the count of crimes in surrounding
+	# blockgroups
+	# Note that since a cell intersects with itself, we need to account for 
+	# this when calculating the mean crime count for neighbouring cells
+	(sum(nb_vals) - blockgroup_data$count[[i]]) / (length(nb_vals) - 1)
+	
+}) %>% 
+	unlist() %>% 
+	replace_na(0)
 ```
 
 # Export data and clean up
 
 ```{r}
 blockgroup_data %>% 
-	# remove list and geometry columns
-	select(-adj) %>% 
-	st_set_geometry(NULL) %>% 
+	# remove list and geometry columns, since we have finished calculating lags
+	# and running spatial operations
+	select(-adj, -adj_geoid) %>% 
 	# write file
 	# this uses write.csv() because of a bug with write_csv(), which unfortunately
 	# means we can't automatically GZ compress the file
-	write.csv("../analysis_data/blockgroup_data.csv", na = "", row.names = FALSE)
+	write.csv(gzfile("../analysis_data/blockgroup_data.csv.gz"), na = "", 
+						row.names = FALSE)
 
-rm(blockgroup_data, blockgroup_outlines, cities, code_city_outlines,
-   code_counties)
+rm(blockgroup_data, blockgroup_outlines, code_city_outlines, code_counties)
 ```
 

@@ -12,6 +12,8 @@ easily reloaded after a restart.
 # NB models
 # NOTE: MASS must be loaded before tidyverse otherwise it masks dplyr::select()
 library("MASS")
+# multi-level models
+library("lme4")
 # loading tidyverse loads ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr 
 # and forcats
 library("tidyverse")
@@ -21,6 +23,8 @@ library("lubridate")
 library("broom")
 # access to the ST spatial library
 library("sf")
+# checks on data
+library("assertr")
 # download Tiger Line data
 library("tigris")
 # download ACS data
@@ -39,6 +43,20 @@ source("census_api_key.R")
 
 # Functions
 
+## Print a comment inside a pipe
+
+```{r}
+print_comment <- function (data, ..., add_newline = TRUE) {
+	
+	# print the comment to the current output
+	cat(..., ifelse(add_newline == TRUE, "\n", ""))
+	
+	# return the data object unchanged
+	data
+}
+```
+
+
 ## Scale and remove attributes from result
 
 `scale()` returns a one-dimensional matrix with attributes, rather than a
@@ -51,6 +69,19 @@ scale_vector <- function(...) {
 	as.numeric(scale(...))
 }
 ```
+
+## Identify valid unique values of a vector
+
+Produces a vector of unique values, excluding NA. as.vector() is required 
+because na.omit() produces a vector with attributes that otherwise complicate
+the data tibble.
+
+```{r}
+unique_valid <- function (x) {
+	as.vector(na.omit(unique(x)))
+}
+```
+
 
 ## Add centroid co-ordinates as columns in an SF object
 
