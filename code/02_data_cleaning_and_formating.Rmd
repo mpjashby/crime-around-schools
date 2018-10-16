@@ -582,8 +582,7 @@ crime_data <- crime_data %>%
 	mutate(
 		school_day = ifelse(weekday %in% c("Sat", "Sun"), NA, school_day),
 		school_time = ifelse(weekday %in% c("Sat", "Sun"), NA, school_time)
-	) %>% 
-	select(-weekday)
+	)
 
 rm(school_holidays)
 ```
@@ -1280,18 +1279,24 @@ To account for spatial autocorrelation in crime counts, we will calculate the
 mean count of crimes in queen-adjacent cells.
 
 ```{r}
+# create a composite variable
+blockgroup_data <- blockgroup_data %>% 
+	mutate(selector = paste(crime_type, school_day, school_time, public_location))
+
 # for each row, calculate the mean of the count of surrounding blockgroups
+system.time(
 blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
 	
 	# get crime counts for neighbouring blockgroups
 	# note the subset is wrapped in which() to prevent R adding rows of NA values
 	# as described at https://stackoverflow.com/a/37351328/8222654
 	nb_vals <- blockgroup_data$count[
-		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] &
-			blockgroup_data$crime_type == blockgroup_data$crime_type[[i]] &
-			blockgroup_data$school_day == blockgroup_data$school_day[[i]] &
-			blockgroup_data$school_time == blockgroup_data$school_time[[i]] &
-			blockgroup_data$public_location == blockgroup_data$public_location[[i]]
+		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] 
+		& blockgroup_data$selector == blockgroup_data$selector[[i]]
+		# & blockgroup_data$crime_type == blockgroup_data$crime_type[[i]]
+		# & blockgroup_data$school_day == blockgroup_data$school_day[[i]]
+		# & blockgroup_data$school_time == blockgroup_data$school_time[[i]]
+		# & blockgroup_data$public_location == blockgroup_data$public_location[[i]]
 		]
 	
 	# calculate lag as the arithmetic mean of the count of crimes in surrounding
@@ -1303,6 +1308,11 @@ blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
 }) %>% 
 	unlist() %>% 
 	replace_na(0)
+)
+
+# remove the composite variable
+blockgroup_data <- blockgroup_data %>% 
+	select(-selector)
 ```
 
 # Export data and clean up

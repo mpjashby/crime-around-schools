@@ -44,8 +44,7 @@ data <- read_csv("../analysis_data/blockgroup_data.csv.gz", col_types = cols(
 	pop_total = col_integer(),
   density_class = col_factor(levels = NULL)
 )) %>% 
-	mutate_at(vars(starts_with("land_cover_prop_")), ~ifelse(. > 1, 1, .)) %>% 
-	glimpse()
+	mutate_at(vars(starts_with("land_cover_prop_")), ~ifelse(. > 1, 1, .))
 ```
 
 
@@ -72,7 +71,7 @@ data %>%
 								"with no NA values") %>% 
 	assert(is.character, public_location) %>% 
 	assert(in_set("public", "private", "other"), public_location) %>% 
-	# assert(not_na, public_location) %>% 
+	assert(not_na, public_location) %>%
 	print_comment("👍 public_location is a character, all values are valid with",
 								"no NA values") %>% 
 
@@ -124,7 +123,7 @@ data %>%
 
 	# factors
 	assert(is.factor, crime_type, density_class) %>% 
-	# assert(not_na, crime_type, density_class) %>% 
+	assert(not_na, crime_type, density_class) %>%
 	print_comment("👍 crime_type is a factor with no NA values") %>% 
 
 	# logicals
@@ -162,7 +161,7 @@ visually and by calculating the ratio of the variance of the dependent variable
 to the mean.
 
 ```{r}
-hist(data$count, breaks = 100)
+ggplot(data) + geom_histogram(aes(count), bins = 100) + theme_minimal()
 ```
 
 The histograms suggest a Poisson-distributed response variable. We can check
@@ -246,6 +245,20 @@ response variable. For this reason we will include them in the model for now.
 
 # Build models
 
+We will store all the models in a single list containing a list for each type of
+crime. We can also initiate a list for formulae.
+
+```{r}
+f <- list()
+
+m <- list(
+	"aslt" = list(),
+	"robb" = list()
+)
+```
+
+## Create data for testing H1 and H2
+
 We can test H1 and H2 together, because data to test them are available in all
 cities. The data for this model require collapsing of rows so that there are not
 separate rows for offenses in public/private places.
@@ -255,7 +268,9 @@ data_h1 <- data %>%
 	group_by(geoid, crime_type, school_day, school_time) %>% 
 	summarise(
 		count = sum(count),
-		lagged_crimes = sum(lagged_crimes),
+		count_lag = sum(count_lag),
+		city_name = first(city_name),
+		school = first(school),
 		school_count = first(school_count),
 		school_students = first(school_students),
 		pop_total = first(pop_total),
@@ -266,24 +281,59 @@ data_h1 <- data %>%
 		perc_teen_sc = first(perc_teen_sc),
 		prop_developed = first(prop_developed)
 	) %>% 
+	# we must ungroup() before mutate() otherwise dplyr will mutate by group
+	ungroup() %>% 
+	# the count_lag variable must be scaled or the model is unlikely to converge,
+	# but this must be done after count_lag is summed
+	mutate(
+		count_lag_sc = as.numeric(scale(count_lag, center = TRUE, scale = TRUE))
+	) %>% 
 	glimpse()
 ```
 
+## Reference models
 
-H3 must be tested separately
+We first create reference models for comparison later on. These models contain
+only the variables necessary to describe the structure of the data, plus 
+city_name.
+
+```{r}
+m$aslt$ref <- glmer(count ~ school_day + school_time + count_lag_sc + (1 | city_name), 
+										subset(data_h1, crime_type == "assault"), family = "poisson")
+m$robb$ref <- glmer.nb(count ~ school_day + school_time + count_lag_sc | city_name, 
+											 subset(data_h1, crime_type == "robbery"))
+```
+
+## Testing H1 and H2
+
+Eventual formula should be something like
+
+```{r}
+f$h1 <- count ~ pop_total_sc + index_disadvantage + index_mobility + 
+	index_ethnic + perc_teen_sc + count_lag_sc + 
+	# school*school_day*school_time
+	# (1 | city_name)
+	(school * school_day * school_time | city_name)
+m$aslt$h1_onelevel <- glm.nb(
+	f$h1, 
+	data = sample_frac(subset(data_h1, crime_type == "assault"), 0.1)
+)
+m$aslt$h1 <- glmer.nb(
+	f$h1, 
+	data = subset(data_h1, crime_type == "assault"),
+	control = glmerControl(calc.derivs = FALSE, optCtrl = list(maxfun = 10^7))
+)
+
+```
+
+
+
+
+
+
 
 
 # Build models
-
-We will store all the models in a single list containing a list for each type of
-crime.
-
-```{r}
-m <- list(
-	"aslt" = list(),
-	"robb" = list()
-)
-```
 
 We will also create some empty models for comparison later on.
 
