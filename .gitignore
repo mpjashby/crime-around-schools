@@ -33,6 +33,9 @@ code/census_api_key.R
 # case all available online
 /original_data/
 
+# Exclude temporary data storage files, which can be very large
+/analysis_data/*.Rds
+
 # Exclude outputs since these often need context (e.g. in a pre-print) to be 
 # meaningful.
 /outputs/
