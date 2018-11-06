@@ -33,10 +33,13 @@ code/census_api_key.R
 # case all available online
 /original_data/
 
-# Exclude temporary data storage files, which can be very large
+# Exclude temporary data storage files, which can be very large, except the
+# main data storage object
 /analysis_data/*.Rds
+!/analysis_data/blockgroup_data.Rds
 
 # Exclude outputs since these often need context (e.g. in a pre-print) to be 
 # meaningful.
 /outputs/
 
+/police-uk*

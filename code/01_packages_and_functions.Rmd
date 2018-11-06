@@ -57,6 +57,25 @@ print_comment <- function (data, ..., add_newline = TRUE) {
 ```
 
 
+## Download data if no local copy exists
+
+```{r}
+download_if_needed <- function (remote, local) {
+	
+	if (!file.exists(local)) {
+		httr::stop_for_status(httr::GET(remote, httr::progress(), 
+																		httr::write_disk(local)))
+			
+		message("Remote file downloaded to ", local, appendLF = TRUE)
+	} else {
+		message("Local file ", local, " already exists", appendLF = TRUE)
+	}
+	
+}
+```
+
+
+
 ## Scale and remove attributes from result
 
 `scale()` returns a one-dimensional matrix with attributes, rather than a

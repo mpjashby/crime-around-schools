@@ -67,6 +67,646 @@ cities <- tribble(
 ```
 
 
+# Neighbourhood data
+
+
+## Geographic boundary files
+
+```{r}
+if (!file.exists("../original_data/block_groups.gpkg")) {
+	
+	# set cache folder
+	tigris_cache_dir("original_data")
+	readRenviron('~/.Renviron')
+	
+	# download block group outlines for counties containing CODE cities
+	blockgroup_outlines <- lapply(code_counties, function (x) {
+		# block_groups() from tigris
+		block_groups(
+			state = str_sub(x, 1, 2),
+			county = str_sub(x, 3, 5),
+			cb = FALSE,
+			year = 2016,
+			class = "sf"
+		)
+	}) %>% 
+		reduce(rbind) %>%
+		st_transform(4326) %>% 
+		select(
+			geoid = GEOID,
+			state = STATEFP,
+			county = COUNTYFP,
+			census_tract = TRACTCE,
+			census_block_group = BLKGRPCE,
+			area_land = ALAND, # in square metres
+			area_water = AWATER # in square metres
+		)
+	
+	# save a copy of the block groups data
+	st_write(blockgroup_outlines, "../original_data/block_groups.gpkg", 
+					 quiet = TRUE)
+	
+} else {
+	
+	# load block group outlines
+	blockgroup_outlines <- st_read("../original_data/block_groups.gpkg", 
+																 stringsAsFactors = FALSE)
+	
+}
+
+glimpse(blockgroup_outlines)
+
+if (!file.exists("../original_data/city_outlines.gpkg")) {
+	
+	# download city outlines
+	code_city_outlines <- lapply(cities$name, function (x) {
+		# places() from tigris
+		places(
+			state = cities$fips[cities$name == x],
+			cb = FALSE,
+			year = 2016,
+			class = "sf"
+		) %>% 
+			filter(NAME == x)
+	}) %>% 
+		reduce(rbind) %>% 
+		st_transform(4326) %>% 
+		select(
+			state = STATEFP,
+			geoid = GEOID,
+			city_name = NAME,
+			area_land = ALAND,
+			area_water = AWATER
+		)
+	
+	# remove the Farallon Islands from the outline of San Francisco
+	code_city_outlines <- code_city_outlines %>% 
+		st_cast("POLYGON") %>% 
+		add_centroid_coordinates() %>%
+		filter(X > -123) %>% 
+		select(-X, -Y) %>% 
+		group_by(city_name) %>%
+		summarise(state = first(state))
+	
+	# save a copy of the city outline data
+	st_write(code_city_outlines, "../original_data/city_outlines.gpkg", 
+					 quiet = TRUE, layer_options = c("OVERWRITE=YES"))
+	
+} else {
+	
+	# read city outlines
+	code_city_outlines <- st_read("../original_data/city_outlines.gpkg", 
+																stringsAsFactors = FALSE)
+	
+}
+
+glimpse(code_city_outlines)
+
+# filter out block groups that are not at least partly within a CODE city
+blockgroup_outlines <- blockgroup_outlines %>% 
+	st_join(select(code_city_outlines, -state)) %>% 
+	filter(!is.na(city_name))
+
+# remove any block groups that are mostly outside city boundaries
+blockgroup_outlines <- blockgroup_outlines %>% 
+	add_overlap_area(code_city_outlines) %>% 
+	filter(prop_overlap > 0.5) %>% 
+	select(-prop_overlap) %>% 
+	glimpse()
+
+# create list-column of blockgroups that intersect (i.e. have queen contiguity 
+# with) each blockgroup
+# This is done by calling st_intersects() with only one argument, which 
+# intersects the layer with itself. The map function is needed because 
+# st_intersects() returns a sparse geometry binary predicate list (SGBP) which
+# is similar to a matrix and so cannot be stored in a tibble (map returns a 
+# normal list). This works because intersecting the layer with itself produces
+# SGBPs each with only one dimension.
+blockgroup_outlines$adj <- st_intersects(blockgroup_outlines) %>% 
+	map(function (x) x)
+
+# the adjacency list consists of row numbers, which will not work with long-
+# format crime in which each blockgroup is represented by multiple rows. To deal
+# with this, we can create a corresponding list column of geoids
+blockgroup_outlines$adj_geoid <- map(1:nrow(blockgroup_outlines), function (i) {
+	blockgroup_outlines$geoid[blockgroup_outlines$adj[[i]]]
+})
+```
+
+
+## Land cover data
+
+Land cover data for census block groups are available from [Land cover estimates 
+for census geographies](https://osf.io/p4xus/). This project includes a file for 
+each state showing the proportion of each block group with each type of land 
+cover. These can be matched to the other data using the block group GEOID.
+
+We only need to know what proportion of the land in each blockgroup is developed 
+but not open space, i.e. in [NLCD categories](https://www.mrlc.gov/nlcd11_leg.php)
+22, 23 and 24.
+
+```{r}
+land_cover_data <- dir("../original_data", pattern = "^land_cover_", 
+											 full.names = TRUE) %>% 
+	map(function (x) {
+		read_csv(x, col_types = cols(
+			blockgroup = col_character(),
+			.default = col_number()
+		)) %>% 
+			mutate(county = str_sub(blockgroup, 0, 5)) %>% 
+			filter(county %in% code_counties) %>% 
+			select(-county)
+	}) %>% 
+	bind_rows() %>% 
+	rename_at(vars(-blockgroup), ~ paste0("land_cover_", .)) %>% 
+	mutate(prop_developed = land_cover_prop_22 + land_cover_prop_23 + 
+				 	land_cover_prop_24) %>% 
+	select(blockgroup, prop_developed, land_cover_prop_22, land_cover_prop_23, 
+				 land_cover_prop_24) %>% 
+	mutate(
+		prop_developed = ifelse(prop_developed > 1, 1, prop_developed)
+	) %>% 
+	glimpse()
+```
+
+```{r}
+blockgroup_outlines <- blockgroup_outlines %>% 
+	left_join(land_cover_data, by = c("geoid" = "blockgroup")) %>% 
+	glimpse()
+
+rm(land_cover_data)
+```
+
+## Population data
+
+Population data are needed to account for the different nature of different 
+census blocks. The variables that will be included in the model come from 
+[Haberman and Ratcliffe (2015)](http://doi.org/10.1111/1745-9125.12076), with 
+the addition of a variable showing the proportion of the population who are 
+teenagers.
+
+Scaling/centering variables can help to ease interpretation, particularly of the
+intercept term. `glmer.nb()` also struggles to converge when some variables are
+on very different scales to others. To deal with this, we will scale and centre 
+some predictors. Variables with a `_sc` suffix have been mean-centred and scaled 
+using `scale()`.
+
+```{r}
+if (!file.exists("../original_data/acs_data.csv")) {
+	
+	# download 5-year ACS estimates at block-group level
+	acs_data <- map_df(code_counties, function (x) {
+		# get_acs() from tidycensus
+		get_acs(
+			geography = "block group",
+			variables = c(
+				pop_total = "B01001_001E",
+				gpop_male_10_14 = "B01001_005E",
+				gpop_male_15_17 = "B01001_006E",
+				gpop_male_18_19 = "B01001_007E",
+				gpop_feml_10_14 = "B01001_029E",
+				gpop_feml_15_17 = "B01001_030E",
+				gpop_feml_18_19 = "B01001_031E",
+				eth_white = "B03002_003E",
+				eth_black = "B03002_004E",
+				eth_hispanic = "B03002_012E",
+				eth_asian = "B03002_006E",
+				eth_not_hispanic = "B03002_002E",
+				move_same = "B07201_002E",
+				edu_total = "B15003_001E",
+				gedu_highs = "B15003_017E",
+				gedu_gedal = "B15003_018E",
+				gedu_some1 = "B15003_019E",
+				gedu_somem = "B15003_020E",
+				gedu_assoc = "B15003_021E",
+				gedu_batch = "B15003_022E",
+				gedu_mastr = "B15003_023E",
+				gedu_profl = "B15003_024E",
+				gedu_doctr = "B15003_025E",
+				pov_total = "B17010_001E",
+				pov_inpov = "B17010_002E",
+				pov_nopov = "B17010_022E",
+				median_income = "B19013_001E",
+				occ_total = "B25003_001E",
+				occ_renting  = "B25003_003E"
+			),
+			year = 2016, # this is the end year of the 5-year period
+			output = "wide",
+			state = as.integer(str_sub(x, 1, 2)),
+			county = as.integer(str_sub(x, 3)),
+			key = census_api_key
+		)
+	}, .id = "county")
+	
+	# save a copy of the raw ACS data to a file
+	write_csv(acs_data, "../original_data/acs_data.csv", na = "")
+	
+	# clean up
+	rm(census_api_key)
+	
+} else {
+	
+	# load ACS data
+	acs_data <- read_csv("../original_data/acs_data.csv")
+	
+}
+
+# sum variables where required
+acs_data <- acs_data %>% mutate(
+	eth_other = eth_not_hispanic - (eth_white + eth_black + eth_asian),
+	pop_teen = rowSums(select(., starts_with("gpop_"))),
+	edu_school_grad = rowSums(select(., starts_with("gedu_")))
+) %>% select(
+	-eth_not_hispanic,
+	-starts_with("gpop_"),
+	-starts_with("gedu_"),
+	-ends_with("M"), # remove all columns containing margins of error
+	-GEOID1, -NAME1 # remove duplicate name and GEOID columns at end of data
+)
+
+# convert ACS variables to variables needed for analysis
+acs_data <- acs_data %>% 
+	mutate(
+		# percentage of residents over 25 without a high-school degree
+		perc_no_degree = 1 - (edu_school_grad / edu_total),
+		# percentage of families in poverty
+		perc_poverty = pov_inpov / pov_total,
+		# percentage of renter-occupied housing units
+		perc_renters = occ_renting / occ_total,
+		# percentage of residents who moved in the past year
+		perc_moved = 1 - (move_same / pop_total),
+		# percentage of residents in each ethnic group,
+		perc_eth_white = eth_white / pop_total,
+		perc_eth_black = eth_black / pop_total,
+		perc_eth_hispanic = eth_hispanic / pop_total,
+		perc_eth_asian = eth_asian / pop_total,
+		perc_eth_other = eth_other / pop_total,
+		# percentage of residents who are teenagers
+		perc_teen = pop_teen / pop_total
+	) %>% 
+	# since some block groups have zero population, some of the above calculations
+	# can produce NA values, which then result in *all* block groups having the
+	# value NA once scale() is called, below. We will therefore filter out these
+	# cases now
+	filter_at(vars(starts_with("perc_"), median_income), all_vars(!is.na(.))) %>% 
+	select(geoid = GEOID, name = NAME, pop_total, perc_no_degree, perc_poverty,
+				 perc_renters, perc_moved, perc_eth_asian, perc_eth_black, 
+				 perc_eth_hispanic, perc_eth_other, perc_eth_white, perc_teen,
+				 median_income) %>% 
+	glimpse()
+
+# scale and center variables
+# acs_data <- acs_data %>% 
+# 	mutate(
+# 		perc_no_degree_sc = scale_vector(perc_no_degree),
+# 		perc_poverty_sc = scale_vector(perc_poverty),
+# 		median_income_sc = scale_vector(median_income) * -1, # reverse scaled
+# 		perc_renters_sc = scale_vector(perc_renters),
+# 		perc_moved_sc = scale_vector(perc_moved),
+# 		perc_teen_sc = scale_vector(perc_teen),
+# 		pop_total_sc = scale_vector(pop_total)
+# 	)
+
+# calculate indices and remove unnecessary variables
+# acs_data <- acs_data %>% 
+# 	mutate(
+# 		# index of concentrated disadvantage
+# 		index_disadvantage = (perc_no_degree_sc + perc_poverty_sc + 
+# 														median_income_sc) / 3,
+# 		# index of residential mobility
+# 		index_mobility = (perc_renters_sc + perc_moved_sc) / 2,
+# 		# index of ethnic heterogeneity
+# 		index_ethnic = 1 - (perc_eth_white^2 + perc_eth_black^2 + 
+# 													perc_eth_hispanic^2 + perc_eth_asian^2 + 
+# 													perc_eth_other^2),
+# 	) %>% 
+# 	select(geoid = GEOID, name = NAME, pop_total, starts_with("index_"),
+# 				 perc_teen_sc, pop_total_sc) %>% 
+# 	glimpse()
+
+```
+
+
+```{r}
+# Join ACS data to blockgroup outlines to remove data from those that fall
+# inside counties with CODE cities but outside the cities themselves. This is
+# needed before scaling the variables and calculating indices.
+blockgroup_outlines <- blockgroup_outlines %>% 
+	left_join(mutate(acs_data, geoid = str_pad(geoid, 12, pad = "0")), 
+						by = "geoid") %>% 
+	select(-name) %>% 
+	mutate_at(
+		c("perc_no_degree", "perc_poverty", "median_income", "perc_renters", 
+			"perc_moved", "perc_teen", "pop_total"),
+		funs(ifelse(is.na(.), 0, .))
+	) %>% 
+	glimpse()
+
+# scale and center ACS variables, removing the unscaled variables other than
+# total population
+blockgroup_outlines <- blockgroup_outlines %>% 
+	group_by(city_name) %>% 
+	mutate(
+		perc_no_degree_sc = scale_vector(perc_no_degree),
+		perc_poverty_sc = scale_vector(perc_poverty),
+		median_income_sc = scale_vector(median_income) * -1, # reverse scaled
+		perc_renters_sc = scale_vector(perc_renters),
+		perc_moved_sc = scale_vector(perc_moved),
+		perc_teen_sc = scale_vector(perc_teen),
+		pop_total_sc = scale_vector(pop_total)
+	) %>% 
+	ungroup()
+
+# calculate indices and remove unnecessary variables
+blockgroup_outlines <- blockgroup_outlines %>% 
+	mutate(
+		# index of concentrated disadvantage
+		index_disadvantage = (perc_no_degree_sc + perc_poverty_sc + 
+														median_income_sc) / 3,
+		# index of residential mobility
+		index_mobility = (perc_renters_sc + perc_moved_sc) / 2,
+		# index of ethnic heterogeneity
+		index_ethnic = 1 - (perc_eth_white^2 + perc_eth_black^2 + 
+													perc_eth_hispanic^2 + perc_eth_asian^2 + 
+													perc_eth_other^2),
+	) %>% 
+	select(-perc_no_degree, -perc_poverty, -median_income, -perc_renters, 
+				 -perc_moved, -perc_teen, -perc_eth_white, -perc_eth_black, 
+				 -perc_eth_hispanic, -perc_eth_asian, -perc_eth_other,
+				 -perc_no_degree_sc, -perc_poverty_sc, -median_income_sc, 
+				 -perc_renters_sc, -perc_moved_sc, -perc_teen_sc) %>% 
+	glimpse()
+
+rm(acs_data)
+```
+
+
+## Zoning data
+
+We can download zoning data from city websites (using cached versions if
+appropriate) and then convert local codes to consistent high-level types.
+
+```{r}
+zoning <- list()
+
+# Chicago
+download_if_needed(
+	remote = "https://data.cityofchicago.org/api/geospatial/7cve-jgbp?method=export&format=GeoJSON",
+	local = "../original_data/zoning_chicago.geojson"
+)
+zoning$chi <- st_read("../original_data/zoning_chicago.geojson") %>% 
+	mutate(
+		zone_code = str_sub(zone_class, 0, 2),
+		zone_code_main = str_sub(zone_class, 0, 1),
+		land_use = case_when(
+			zone_code == "DR" ~ "residential",
+			zone_code == "PM" ~ "commercial",
+			zone_code == "PO" ~ "public open space",
+			zone_code_main %in% c("B", "C", "M") ~ "commercial",
+			zone_code_main == "D" ~ "downtown",
+			zone_code_main == "R" ~ "residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code, -zone_code_main)
+
+# Detroit
+download_if_needed(
+	remote = "https://data.detroitmi.gov/api/geospatial/62rv-kyp9?method=export&format=GeoJSON",
+	local = "../original_data/zoning_detroit.geojson"
+)
+zoning$dtt <- st_read("../original_data/zoning_detroit.geojson") %>% 
+	mutate(
+		zone_code = str_sub(zcode_n, 0, 1),
+		land_use = case_when(
+			zcode_n == "750" ~ "commercial",
+			zone_code == "1" ~ "residential",
+			zone_code %in% c("2", "3", "5", "6") ~ "commercial",
+			zone_code == "4" ~ "downtown",
+			zone_code == "8" ~ "public open space",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code)
+
+# Fort Worth
+download_if_needed(
+	remote = "http://mapit.fortworthtexas.gov/giszipfiles/ADM_ZONING.zip",
+	local = "../original_data/zoning_fort_worth.zip"
+)
+if (!dir.exists("../original_data/zoning_fort_worth/")) {
+	unzip(zipfile = "../original_data/zoning_fort_worth.zip", 
+				exdir = "../original_data/zoning_fort_worth/")
+}
+zoning$ftw <- st_read("../original_data/zoning_fort_worth/ADM_ZONING.shp") %>% 
+	mutate(
+		zone_code = str_extract(ZONING, "^\\w+"),
+		land_use = case_when(
+			zone_code %in% c("E", "ER", "F", "FR", "G", "I", "J", "K") ~ "commercial",
+			zone_code == "H" ~ "downtown",
+			zone_code %in% c("A", "AR", "B", "C", "CR", "D", "MH", "R1", "R2", "UR") ~ 
+				"residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	st_transform(4326)
+
+# Kansas City
+download_if_needed(
+	remote = "http://maps.kcmo.org/apps/download/GisDataDownload/Other.gdb.zip",
+	local = "../original_data/zoning_kansas_city.zip"
+)
+if (!dir.exists("../original_data/zoning_kansas_city/")) {
+	unzip(zipfile = "../original_data/zoning_kansas_city.zip", 
+				exdir = "../original_data/zoning_kansas_city/")
+}
+zoning$kcm <- st_read("../original_data/zoning_kansas_city/Other.gdb", 
+											layer = "Zoning") %>% 
+	mutate(
+		zone_code = str_sub(LANDUSE, 0, 1),
+		land_use = case_when(
+			zone_code == "D" ~ "downtown",
+			LANDUSE %in% c("Commercial", "Industrial") ~ "commercial",
+			LANDUSE == "Residential" ~ "residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code) %>% 
+	rename(geometry = SHAPE) %>% 
+	st_transform(4326)
+
+# Los Angeles
+download_if_needed(
+	remote = "https://opendata.arcgis.com/datasets/49ad06a6b8c945debbbea865b1832ee2_0.geojson",
+	local = "../original_data/zoning_los_angeles.geojson"
+)
+zoning$lax <- st_read("../original_data/zoning_los_angeles.geojson") %>% 
+	mutate(land_use = case_when(
+		ZONE_SMRY %in% c("COMMERCIAL", "INDUSTRIAL", "PARKING") ~ "commercial",
+		ZONE_SMRY == "RESIDENTIAL" ~ "residential",
+		ZONE_SMRY == "OPEN SPACE" ~ "public open space",
+		TRUE ~ "other"
+	))
+
+# Louisville
+download_if_needed(
+	remote = "https://opendata.arcgis.com/datasets/901f9c3321494238ac38a01d7e96d932_19.geojson",
+	local = "../original_data/zoning_louisville.geojson"
+)
+zoning$lou <- st_read("../original_data/zoning_louisville.geojson") %>% 
+	mutate(land_use = case_when(
+		ZONING_TYPE %in% c("COMMERCIAL-INDUSTRIAL", "INDUSTRIAL", "OFFICE") ~ 
+			"commercial",
+		ZONING_TYPE == "RESIDENTIAL" ~ "residential",
+		TRUE ~ "other"
+	))
+
+# New York
+download_if_needed(
+	remote = "https://www1.nyc.gov/assets/planning/download/zip/data-maps/open-data/nycgiszoningfeatures_201810shp.zip",
+	local = "../original_data/zoning_new_york.zip"
+)
+if (!dir.exists("../original_data/zoning_new_york/")) {
+	unzip(zipfile = "../original_data/zoning_new_york.zip", 
+				exdir = "../original_data/zoning_new_york/")
+}
+zoning$nyc <- st_read("../original_data/zoning_new_york/nyzd.shp") %>% 
+	mutate(
+		zone_code = str_sub(ZONEDIST, 0, 1),
+		land_use = case_when(
+			ZONEDIST == "BALL FIELD" ~ "other",
+			ZONEDIST %in% c("PARK", "PLAYGROUND", "PUBLIC PLACE") ~ 
+				"public open space",
+			zone_code %in% c("C", "M") ~ "commercial",
+			zone_code == "R" ~ "residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code) %>% 
+	st_transform(4326)
+
+# San Francisco
+download_if_needed(
+	remote = "https://data.sfgov.org/api/geospatial/xvjh-uu28?method=export&format=GeoJSON",
+	local = "../original_data/zoning_san_francisco.geojson"
+)
+zoning$sfo <- st_read("../original_data/zoning_san_francisco.geojson") %>% 
+	mutate(land_use = case_when(
+		zoning %in% c("C-2", "M-1", "M-2", "MB-O", "MB-RA", "MUO", "PM-CF", "SALI", 
+									"SLI", "SSO", "WMUO") ~ "commercial",
+		str_sub(zoning, 0, 2) %in% c("NC", "PD", "RC") ~ "commercial",
+		zoning %in% c("C-3-G", "C-3-O", "C-3-O(SD)", "C-3-R", "C-3-S", "CCB", 
+									"CVR") ~ "downtown",
+		zoning %in% c("P", "PM-OS", "TI-OS", "YBI-OS") ~ "public open space",
+		zoning %in% c("CRNC", "MUR", "PM-R", "PM-S", "RED", "RED-MX", "RH DTR", 
+									"SB-DTR", "TB DTR", "TI-R", "YBI-R") ~ "residential",
+		str_sub(zoning, 0, 2) %in% c("RH", "RM", "RT") ~ "residential",
+		TRUE ~ "other"
+	))
+
+# Tucson
+download_if_needed(
+	remote = "https://opendata.arcgis.com/datasets/489d09483d36427abd9738ee7d2a1de8_19.geojson",
+	local = "../original_data/zoning_tucson.geojson"
+)
+zoning$tus <- st_read("../original_data/zoning_tucson.geojson") %>% 
+	mutate(
+		zone_code = str_extract(ORIG_ZONE, "^\\w+"),
+		land_use = case_when(
+			zone_code %in% c("C", "CB", "CI", "I", "NC", "O", "P", "RVC") ~ "commercial",
+			zone_code %in% c("IR", "OS") ~ "public open space",
+			zone_code %in% c("CR", "MH", "R", "RV", "RX", "SH", "SR") ~ "residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code)
+
+# Virginia Beach
+download_if_needed(
+	remote = "http://gis.data.vbgov.com/datasets/a3558a2790384bd0950cbdbe69e29da8_2.geojson",
+	local = "../original_data/zoning_virginia_beach.geojson"
+)
+zoning$vib <- st_read("../original_data/zoning_virginia_beach.geojson") %>% 
+	mutate(
+		zone_code = str_sub(ZONING, 0, 1),
+		land_use = case_when(
+			ZONING %in% c("RT1", "RT3", "RT4") ~ "commercial",
+			ZONING %in% c("B3", "CBC") ~ "downtown",
+			ZONING == "P1" ~ "public open space",
+			ZONING %in% c("A12", "A18", "A24", "A36") ~ "residential",
+			zone_code %in% c("B", "I", "O") ~ "commercial",
+			zone_code == "R" ~ "residential",
+			TRUE ~ "other"
+		)
+	) %>% 
+	select(-zone_code)
+
+# union polygons
+zoning <- map(zoning, function (x) {
+	x %>% 
+		filter(st_is_valid(x)) %>% 
+		group_by(land_use) %>% 
+		summarise()
+})
+
+# merge and save data
+zoning %>% 
+	reduce(rbind) %>% 
+	rename(geometry = geom) %>% 
+	rmapshaper::ms_simplify(keep = 0.1) %>% 
+	filter(st_is_valid(.)) %>% 
+	st_write("../analysis_data/zoning.gpkg")
+
+rm(zoning)
+```
+
+Using the zoning data we can calculate the proportion of each blockgroup that
+is zoned as either residential or commercial, and from that calculate the ratio
+between the two.
+
+```{r}
+zoning <- st_read("../analysis_data/zoning.gpkg")
+
+# calculate proportion of each blockgroup that has commercial zoning
+blockgroup_outlines <- blockgroup_outlines %>% 
+	select(-prop_overlap) %>% 
+	add_overlap_area(filter(zoning, 
+													land_use %in% c("commercial", "downtown"))) %>% 
+	rename(prop_zoned_commercial = prop_overlap)
+```
+
+
+
+## Facility data
+
+We can obtain details of retail facilities from OSM, but note that: 
+
+  * some may be stored as polygons and some as points,
+  * some may be coded as building=retail and some as shop=*
+
+So it is necessary to do multiple queries.
+
+```{r}
+cities %>% 
+	slice(2) %>% 
+	apply(1, function (x) {
+		
+		# get data on retail buildings
+		retail <- opq(bbox = paste0(x['name'], ", ", x['state'])) %>% 
+			add_osm_feature(key = "building", value = "retail", 
+											match_case = FALSE) %>% 
+			osmdata_sf()
+		
+		# get data on shops
+		shops <- opq(bbox = paste0(x['name'], ", ", x['state'])) %>% 
+			add_osm_feature(key = "shop", match_case = FALSE) %>% 
+			osmdata_sf()
+
+})
+```
+
+
+
 # Crime data
 
 We need five years of crime data from the CODE database. Only some columns from 
@@ -604,6 +1244,147 @@ crime_data <- crime_data %>%
 ```
 
 
+## Calculate crime counts
+
+For analysis, we need a tibble of crime counts for each blockgroup. To test the
+hypotheses, we need separate counts for the various states of school days,
+school times and location types.
+
+The crime data already contain the information necessary to construct block 
+group ID codes, so there is no need to carry out any spatial operations.
+
+```{r}
+crime_counts <- crime_data %>% 
+	mutate(
+		crime_type = as.factor(case_when(
+			offense_code %in% c("13A", "13B", "13C") ~ "assault",
+			offense_code %in% c("12A") ~ "robbery", # only personal robbery
+			TRUE ~ NA_character_
+		)),
+		blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract,
+													 census_blockgroup)
+	) %>% 
+	# remove crimes that are of types we aren't studying, as well as crimes
+	# occurring at weekends (for which school_day and school_time are both set to
+	# NA)
+	filter(!is.na(crime_type), !is.na(school_day), !is.na(school_time)) %>% 
+	group_by(blockgroup_id, crime_type, school_day, school_time, 
+					 public_location) %>% 
+	summarise(count = n()) %>% 
+	ungroup() %>% 
+	assert(not_na, crime_type, school_day, school_time, public_location) %>% 
+	# complete() adds rows for blockgroups with zero counts in particular 
+	# categories
+	complete(blockgroup_id, crime_type, school_day, school_time, public_location, 
+					 fill = list(count = 0)) %>% 
+	glimpse()
+
+# attach crime counts to block groups
+# note that blockgroup_outlines must be on the left-hand side of this join,
+# otherwise blocks without any offenses wouldn't be joined to anything and would
+# be stripped from the data
+blockgroup_data <- left_join(blockgroup_outlines, crime_counts, 
+														 by = c("geoid" = "blockgroup_id")) %>% 
+	mutate(count = ifelse(is.na(count), 0, count)) %>% 
+	# we can remove rows relating to blockgroups that do not contain any land
+	filter(area_land > 0) %>% 
+	# we can remove the geometry column, since spatial operations are complete and
+	# it can complicate subsetting
+	st_set_geometry(NULL) %>% 
+	glimpse()
+
+# Blocks without any offenses will only appear once in blockgroup_data, and 
+# the values of crime_type, school_day, school_time and public_location will be
+# set to NA because there were no rows in crime_counts to join to 
+# blockgroup_outlines in the join directly above.
+# 1. Create a data frame of blocks with no crimes, with each block having a row
+# for each value of crime_type, school_day, school_time and public_location
+no_crime_blockgroups <- expand.grid(
+	geoid = unique_valid(blockgroup_data$geoid[is.na(blockgroup_data$crime_type)]),
+	crime_type = unique_valid(blockgroup_data$crime_type),
+	school_day = unique_valid(blockgroup_data$school_day),
+	school_time = unique_valid(blockgroup_data$school_time),
+	public_location = unique_valid(blockgroup_data$public_location),
+	stringsAsFactors = FALSE
+) %>% 
+	arrange(geoid)
+# 2. Add all the other columns to this data frame
+no_crime_blockgroups <- no_crime_blockgroups %>% 
+	left_join(select(blockgroup_data, -crime_type, -school_day, -school_time, 
+									 -public_location), by = "geoid") %>% 
+	glimpse()
+# 3. Add these rows to the original dataset, having first filtered out the rows
+# in it containing NA values
+blockgroup_data <- blockgroup_data %>% 
+	filter(!is.na(crime_type)) %>% 
+	bind_rows(no_crime_blockgroups)
+
+# we can now remove rows for public and private location types in cities for
+# which we don't have location types, to reduce the number of rows to be 
+# processed later on
+blockgroup_data <- blockgroup_data %>% 
+	filter(!(city_name %in% c("Detroit", "Kansas City", "San Francisco", "Tucson",
+														"Virginia Beach") & public_location != "other"))
+	
+# summarise the values of school_day and school_time in a single variable, to be
+# used in multi-level modelling
+blockgroup_data <- blockgroup_data %>% 
+	mutate(period = case_when(
+		school_day == FALSE & school_time == FALSE ~ 
+			"non-school day, non-school time",
+		school_day == FALSE & school_time == TRUE ~ "non-school day, school time",
+		school_day == TRUE & school_time == FALSE ~ "school day, non-school time",
+		school_day == TRUE & school_time == TRUE ~ "school day, school time",
+		TRUE ~ NA_character_
+	))
+
+# remove unnecessary objects
+rm(crime_data, crime_counts, no_crime_blockgroups)
+```
+
+
+## Calculate spatial lags of crime counts
+
+To account for spatial autocorrelation in crime counts, we will calculate the 
+mean count of crimes in queen-adjacent cells.
+
+```{r}
+# create a composite variable
+blockgroup_data <- blockgroup_data %>% 
+	mutate(selector = paste(crime_type, school_day, school_time, public_location))
+
+# for each row, calculate the mean of the count of surrounding blockgroups
+system.time(
+blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
+	
+	# get crime counts for neighbouring blockgroups
+	# note the subset is wrapped in which() to prevent R adding rows of NA values
+	# as described at https://stackoverflow.com/a/37351328/8222654
+	nb_vals <- blockgroup_data$count[
+		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] 
+		& blockgroup_data$selector == blockgroup_data$selector[[i]]
+		# & blockgroup_data$crime_type == blockgroup_data$crime_type[[i]]
+		# & blockgroup_data$school_day == blockgroup_data$school_day[[i]]
+		# & blockgroup_data$school_time == blockgroup_data$school_time[[i]]
+		# & blockgroup_data$public_location == blockgroup_data$public_location[[i]]
+		]
+	
+	# calculate lag as the arithmetic mean of the count of crimes in surrounding
+	# blockgroups
+	# Note that since a cell intersects with itself, we need to account for 
+	# this when calculating the mean crime count for neighbouring cells
+	(sum(nb_vals) - blockgroup_data$count[[i]]) / (length(nb_vals) - 1)
+	
+}) %>% 
+	unlist() %>% 
+	replace_na(0)
+)
+
+# remove the composite variable
+blockgroup_data <- blockgroup_data %>% 
+	select(-selector)
+```
+
 
 # School data
 
@@ -616,6 +1397,9 @@ the data about each school.
 
 Details of the file formats are available at 
 https://nces.ed.gov/ccd/pubschuniv.asp
+
+
+## Public schools
 
 The information on each school is separated into several files that can be 
 merged using the NCESSCH school code. This code loads each file, selects the 
@@ -719,132 +1503,7 @@ school_data <- school_locations %>%
 rm(school_characteristics, school_info, school_locations, school_membership)
 ```
 
-
-# Geographic boundary files
-
-```{r}
-if (!file.exists("../original_data/block_groups.gpkg")) {
-	
-	# set cache folder
-	tigris_cache_dir("original_data")
-	readRenviron('~/.Renviron')
-	
-	# download block group outlines for counties containing CODE cities
-	blockgroup_outlines <- lapply(code_counties, function (x) {
-		# block_groups() from tigris
-		block_groups(
-			state = str_sub(x, 1, 2),
-			county = str_sub(x, 3, 5),
-			cb = FALSE,
-			year = 2016,
-			class = "sf"
-		)
-	}) %>% 
-		reduce(rbind) %>%
-		st_transform(4326) %>% 
-		select(
-			geoid = GEOID,
-			state = STATEFP,
-			county = COUNTYFP,
-			census_tract = TRACTCE,
-			census_block_group = BLKGRPCE,
-			area_land = ALAND, # in square metres
-			area_water = AWATER # in square metres
-		)
-	
-	# save a copy of the block groups data
-	st_write(blockgroup_outlines, "../original_data/block_groups.gpkg", 
-					 quiet = TRUE)
-	
-} else {
-	
-	# load block group outlines
-	blockgroup_outlines <- st_read("../original_data/block_groups.gpkg", 
-																 stringsAsFactors = FALSE)
-	
-}
-
-glimpse(blockgroup_outlines)
-
-if (!file.exists("../original_data/city_outlines.gpkg")) {
-	
-	# download city outlines
-	code_city_outlines <- lapply(cities$name, function (x) {
-		# places() from tigris
-		places(
-			state = cities$fips[cities$name == x],
-			cb = FALSE,
-			year = 2016,
-			class = "sf"
-		) %>% 
-			filter(NAME == x)
-	}) %>% 
-		reduce(rbind) %>% 
-		st_transform(4326) %>% 
-		select(
-			state = STATEFP,
-			geoid = GEOID,
-			city_name = NAME,
-			area_land = ALAND,
-			area_water = AWATER
-		)
-	
-	# remove the Farallon Islands from the outline of San Francisco
-	code_city_outlines <- code_city_outlines %>% 
-		st_cast("POLYGON") %>% 
-		add_centroid_coordinates() %>%
-		filter(X > -123) %>% 
-		select(-X, -Y) %>% 
-		group_by(city_name) %>%
-		summarise(state = first(state))
-	
-	# save a copy of the city outline data
-	st_write(code_city_outlines, "../original_data/city_outlines.gpkg", 
-					 quiet = TRUE, layer_options = c("OVERWRITE=YES"))
-	
-} else {
-	
-	# read city outlines
-	code_city_outlines <- st_read("../original_data/city_outlines.gpkg", 
-																stringsAsFactors = FALSE)
-	
-}
-
-glimpse(code_city_outlines)
-
-# filter out block groups that are not at least partly within a CODE city
-blockgroup_outlines <- blockgroup_outlines %>% 
-	st_join(select(code_city_outlines, -state)) %>% 
-	filter(!is.na(city_name))
-
-# remove any block groups that are mostly outside city boundaries
-blockgroup_outlines <- blockgroup_outlines %>% 
-	add_overlap_area(code_city_outlines) %>% 
-	filter(prop_overlap > 0.5) %>% 
-	glimpse()
-
-# create list-column of blockgroups that intersect (i.e. have queen contiguity 
-# with) each blockgroup
-# This is done by calling st_intersects() with only one argument, which 
-# intersects the layer with itself. The map function is needed because 
-# st_intersects() returns a sparse geometry binary predicate list (SGBP) which
-# is similar to a matrix and so cannot be stored in a tibble (map returns a 
-# normal list). This works because intersecting the layer with itself produces
-# SGBPs each with only one dimension.
-blockgroup_outlines$adj <- st_intersects(blockgroup_outlines) %>% 
-	map(function (x) x)
-
-# the adjacency list consists of row numbers, which will not work with long-
-# format crime in which each blockgroup is represented by multiple rows. To deal
-# with this, we can create a corresponding list column of geoids
-blockgroup_outlines$adj_geoid <- map(1:nrow(blockgroup_outlines), function (i) {
-	blockgroup_outlines$geoid[blockgroup_outlines$adj[[i]]]
-}) %>% 
-	glimpse()
-```
-
-
-# Private school data
+## Private schools
 
 These data are from https://nces.ed.gov/surveys/pss/pssdata.asp and include 
 lat/lon pairs, so we don't have to add geographic information separately
@@ -891,7 +1550,7 @@ rm(private_schools)
 ```
 
 
-# Filter by location and add census identifiers
+## Filter by location and add census identifiers
 
 ```{r}
 # convert school data to an SF object
@@ -911,278 +1570,6 @@ school_data <- school_data %>%
 	select(-area_land, -area_water)
 ```
 
-
-# Land cover data
-
-Land cover data for census block groups are available from [Land cover estimates 
-for census geographies](https://osf.io/p4xus/). This project includes a file for 
-each state showing the proportion of each block group with each type of land 
-cover. These can be matched to the other data using the block group GEOID.
-
-```{r}
-land_cover_data <- dir("../original_data", pattern = "^land_cover_", 
-											 full.names = TRUE) %>% 
-	map(function (x) {
-		read_csv(x, col_types = cols(
-			blockgroup = col_character(),
-			.default = col_number()
-		)) %>% 
-			mutate(county = str_sub(blockgroup, 0, 5)) %>% 
-			filter(county %in% code_counties) %>% 
-			select(-county)
-	}) %>% 
-	bind_rows() %>% 
-	rename_at(vars(-blockgroup), ~ paste0("land_cover_", .)) %>% 
-	glimpse()
-```
-
-We only need to know what proportion of the land in each blockgroup is developed 
-but not open space, i.e. in [NLCD categories](https://www.mrlc.gov/nlcd11_leg.php)
-22, 23 and 24.
-
-```{r}
-land_cover_data <- land_cover_data %>% 
-	mutate(prop_developed = land_cover_prop_22 + land_cover_prop_23 + 
-				 	land_cover_prop_24) %>% 
-	select(blockgroup, prop_developed, land_cover_prop_22, land_cover_prop_23, 
-				 land_cover_prop_24) %>% 
-	mutate(
-		prop_developed = ifelse(prop_developed > 1, 1, prop_developed)
-	) %>% 
-	glimpse()
-```
-
-
-# Population data
-
-Population data are needed to account for the different nature of different 
-census blocks. The variables that will be included in the model come from 
-[Haberman and Ratcliffe (2015)](http://doi.org/10.1111/1745-9125.12076), with 
-the addition of a variable showing the proportion of the population who are 
-teenagers.
-
-```{r}
-if (!file.exists("../original_data/acs_data.csv")) {
-	
-	# download 5-year ACS estimates at block-group level
-	acs_data <- map_df(code_counties, function (x) {
-		# get_acs() from tidycensus
-		get_acs(
-			geography = "block group",
-			variables = c(
-				pop_total = "B01001_001E",
-				gpop_male_10_14 = "B01001_005E",
-				gpop_male_15_17 = "B01001_006E",
-				gpop_male_18_19 = "B01001_007E",
-				gpop_feml_10_14 = "B01001_029E",
-				gpop_feml_15_17 = "B01001_030E",
-				gpop_feml_18_19 = "B01001_031E",
-				eth_white = "B03002_003E",
-				eth_black = "B03002_004E",
-				eth_hispanic = "B03002_012E",
-				eth_asian = "B03002_006E",
-				eth_not_hispanic = "B03002_002E",
-				move_same = "B07201_002E",
-				edu_total = "B15003_001E",
-				gedu_highs = "B15003_017E",
-				gedu_gedal = "B15003_018E",
-				gedu_some1 = "B15003_019E",
-				gedu_somem = "B15003_020E",
-				gedu_assoc = "B15003_021E",
-				gedu_batch = "B15003_022E",
-				gedu_mastr = "B15003_023E",
-				gedu_profl = "B15003_024E",
-				gedu_doctr = "B15003_025E",
-				pov_total = "B17010_001E",
-				pov_inpov = "B17010_002E",
-				pov_nopov = "B17010_022E",
-				median_income = "B19013_001E",
-				occ_total = "B25003_001E",
-				occ_renting  = "B25003_003E"
-			),
-			year = 2016, # this is the end year of the 5-year period
-			output = "wide",
-			state = as.integer(str_sub(x, 1, 2)),
-			county = as.integer(str_sub(x, 3)),
-			key = census_api_key
-		)
-	}, .id = "county")
-	
-	# save a copy of the raw ACS data to a file
-	write_csv(acs_data, "../original_data/acs_data.csv", na = "")
-	
-	# clean up
-	rm(census_api_key)
-	
-} else {
-	
-	# load ACS data
-	acs_data <- read_csv("../original_data/acs_data.csv")
-	
-}
-
-glimpse(acs_data)
-
-# sum variables where required
-acs_data <- acs_data %>% mutate(
-	eth_other = eth_not_hispanic - (eth_white + eth_black + eth_asian),
-	pop_teen = rowSums(select(., starts_with("gpop_"))),
-	edu_school_grad = rowSums(select(., starts_with("gedu_")))
-) %>% select(
-	-eth_not_hispanic,
-	-starts_with("gpop_"),
-	-starts_with("gedu_"),
-	-ends_with("M"), # remove all columns containing margins of error
-	-GEOID1, -NAME1 # remove duplicate name and GEOID columns at end of data
-)
-
-# convert ACS variables to variables needed for analysis
-acs_data <- acs_data %>% 
-	mutate(
-		# percentage of residents over 25 without a high-school degree
-		perc_no_degree = 1 - (edu_school_grad / edu_total),
-		# percentage of families in poverty
-		perc_poverty = pov_inpov / pov_total,
-		# percentage of renter-occupied housing units
-		perc_renters = occ_renting / occ_total,
-		# percentage of residents who moved in the past year
-		perc_moved = 1 - (move_same / pop_total),
-		# percentage of residents in each ethnic group,
-		perc_eth_white = eth_white / pop_total,
-		perc_eth_black = eth_black / pop_total,
-		perc_eth_hispanic = eth_hispanic / pop_total,
-		perc_eth_asian = eth_asian / pop_total,
-		perc_eth_other = eth_other / pop_total,
-		# percentage of residents who are teenagers
-		perc_teen = pop_teen / pop_total
-	) %>% 
-	# since some block groups have zero population, some of the above calculations
-	# can produce NA values, which then result in *all* block groups having the
-	# value NA once scale() is called, below. We will therefore filter out these
-	# cases now
-	filter_at(vars(starts_with("perc_"), median_income), all_vars(!is.na(.)))
-
-# scale and center variables
-acs_data <- acs_data %>% 
-	mutate(
-		perc_no_degree_sc = scale_vector(perc_no_degree),
-		perc_poverty_sc = scale_vector(perc_poverty),
-		median_income_sc = scale_vector(median_income) * -1, # reverse scaled
-		perc_renters_sc = scale_vector(perc_renters),
-		perc_moved_sc = scale_vector(perc_moved),
-		perc_teen_sc = scale_vector(perc_teen)
-	)
-
-# calculate indices and remove unnecessary variables
-acs_data <- acs_data %>% 
-	mutate(
-		# index of concentrated disadvantage
-		index_disadvantage = (perc_no_degree_sc + perc_poverty_sc + 
-														median_income_sc) / 3,
-		# index of residential mobility
-		index_mobility = (perc_renters_sc + perc_moved_sc) / 2,
-		# index of ethnic heterogeneity
-		index_ethnic = 1 - (perc_eth_white^2 + perc_eth_black^2 + 
-													perc_eth_hispanic^2 + perc_eth_asian^2 + 
-													perc_eth_other^2),
-	) %>% 
-	select(geoid = GEOID, name = NAME, pop_total, starts_with("index_"),
-				 perc_teen_sc) %>% 
-	glimpse()
-
-```
-
-
-# Prepare count data
-
-Each of the types of data prepared about must be attached to the relevant block 
-group, converting variables to counts if necessary.
-
-## Calculate crime counts
-
-For analysis, we need a tibble of crime counts for each blockgroup. To test the
-hypotheses, we need separate counts for the various states of school days,
-school times and location types.
-
-The crime data already contain the information necessary to construct block 
-group ID codes, so there is no need to carry out any spatial operations.
-
-```{r}
-crime_counts <- crime_data %>% 
-	mutate(
-		crime_type = as.factor(case_when(
-			offense_code %in% c("13A", "13B", "13C") ~ "assault",
-			offense_code %in% c("12A") ~ "robbery", # only personal robbery
-			TRUE ~ NA_character_
-		)),
-		blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract,
-													 census_blockgroup)
-	) %>% 
-	# remove crimes that are of types we aren't studying, as well as crimes
-	# occurring at weekends (for which school_day and school_time are both set to
-	# NA)
-	filter(!is.na(crime_type), !is.na(school_day), !is.na(school_time)) %>% 
-	group_by(blockgroup_id, crime_type, school_day, school_time, 
-					 public_location) %>% 
-	summarise(count = n()) %>% 
-	ungroup() %>% 
-	assert(not_na, crime_type, school_day, school_time, public_location) %>% 
-	# complete() adds rows for blockgroups with zero counts in particular 
-	# categories
-	complete(blockgroup_id, crime_type, school_day, school_time, public_location, 
-					 fill = list(count = 0)) %>% 
-	glimpse()
-
-# attach crime counts to block groups
-# note that blockgroup_outlines must be on the left-hand side of this join,
-# otherwise blocks without any offenses wouldn't be joined to anything and would
-# be stripped from the data
-blockgroup_data <- left_join(blockgroup_outlines, crime_counts, 
-														 by = c("geoid" = "blockgroup_id")) %>% 
-	mutate(count = ifelse(is.na(count), 0, count)) %>% 
-	# we can remove rows relating to blockgroups that do not contain any land
-	filter(area_land > 0) %>% 
-	# we can remove the geometry column, since spatial operations are complete and
-	# it can complicate subsetting
-	st_set_geometry(NULL) %>% 
-	glimpse()
-
-# Blocks without any offenses will only appear once in blockgroup_data, and 
-# the values of crime_type, school_day, school_time and public_location will be
-# set to NA because there were no rows in crime_counts to join to 
-# blockgroup_outlines in the join directly above.
-# 1. Create a data frame of blocks with no crimes, with each block having a row
-# for each value of crime_type, school_day, school_time and public_location
-no_crime_blockgroups <- expand.grid(
-	geoid = unique_valid(blockgroup_data$geoid[is.na(blockgroup_data$crime_type)]),
-	crime_type = unique_valid(blockgroup_data$crime_type),
-	school_day = unique_valid(blockgroup_data$school_day),
-	school_time = unique_valid(blockgroup_data$school_time),
-	public_location = unique_valid(blockgroup_data$public_location),
-	stringsAsFactors = FALSE
-) %>% 
-	arrange(geoid)
-# 2. Add all the other columns to this data frame
-no_crime_blockgroups <- no_crime_blockgroups %>% 
-	left_join(select(blockgroup_data, -crime_type, -school_day, -school_time, 
-									 -public_location), by = "geoid") %>% 
-	glimpse()
-# 3. Add these rows to the original dataset, having first filtered out the rows
-# in it containing NA values
-blockgroup_data <- blockgroup_data %>% 
-	filter(!is.na(crime_type)) %>% 
-	bind_rows(no_crime_blockgroups)
-
-# we can now remove rows for public and private location types in cities for
-# which we don't have location types, to reduce the number of rows to be 
-# processed later on
-blockgroup_data <- blockgroup_data %>% 
-	filter(!(city_name %in% c("Detroit", "Kansas City", "San Francisco", "Tucson",
-														"Virginia Beach") & public_location != "other"))
-	
-# remove unnecessary objects
-rm(crime_data, crime_counts, no_crime_blockgroups)
-```
 
 ## Calculate school and student counts
 
@@ -1222,98 +1609,19 @@ rm(school_counts, school_data)
 ```
 
 
-## Add demographic data
+# Filter data
+
+Since our focus is on the association between school location and neighbourhood
+crime, we are primarily interested in residential areas. Also studying 
+industrial zones, etc would substantially increase the variables that needed to
+be controlled in the model. For this reason, we will exclude any blockgroup with
+a population of zero. In particular, this removes LAX, O'Hare and Rikers Island,
+which could otherwise be problematic.
 
 ```{r}
-blockgroup_data <- blockgroup_data %>% 
-	left_join(mutate(acs_data, geoid = str_pad(geoid, 12, pad = "0")), 
-						by = "geoid") %>% 
-	# st_set_geometry(NULL) %>% 
-	select(-name) %>% 
-	mutate_at(
-		c("pop_total", "index_disadvantage", "index_mobility", "index_ethnic", 
-			"perc_teen_sc"),
-		funs(ifelse(is.na(.), 0, .))
-	) %>% 
-	glimpse()
-
-rm(acs_data)
+blockgroup_data <- blockgroup_data %>% filter(pop_total > 0)
 ```
 
-## Add land-cover data
-
-```{r}
-blockgroup_data <- blockgroup_data %>% 
-	left_join(land_cover_data, by = c("geoid" = "blockgroup")) %>% 
-	glimpse()
-
-rm(land_cover_data)
-```
-
-## Calculate population density and urban/suburban category
-
-We know the area of the block groups [in square metres](https://www.census.gov/quickfacts/fact/note/US/LND110210), from which we 
-can calculate the population density in square kilometres.
-
-Cut-offs for the urban/suburban/rural classification come from [Urban, Suburban, 
-or Rural?](https://geodharma.wordpress.com/2016/03/11/urban-suburban-or-rural/)
-
-```{r}
-blockgroup_data <- blockgroup_data %>% 
-	mutate(
-		pop_density = pop_total / (area_land / 1E+06),
-		pop_density_sqmi = pop_total / (area_land / 2589988),
-		density_class = case_when(
-			pop_density_sqmi > 3000 ~ "urban",
-			pop_density_sqmi > 1000 ~ "suburban",
-			TRUE ~ "rural"
-		)
-	) %>% 
-	select(-pop_density_sqmi)
-```
-
-
-# Calculate spatial lags of crime counts
-
-To account for spatial autocorrelation in crime counts, we will calculate the 
-mean count of crimes in queen-adjacent cells.
-
-```{r}
-# create a composite variable
-blockgroup_data <- blockgroup_data %>% 
-	mutate(selector = paste(crime_type, school_day, school_time, public_location))
-
-# for each row, calculate the mean of the count of surrounding blockgroups
-system.time(
-blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
-	
-	# get crime counts for neighbouring blockgroups
-	# note the subset is wrapped in which() to prevent R adding rows of NA values
-	# as described at https://stackoverflow.com/a/37351328/8222654
-	nb_vals <- blockgroup_data$count[
-		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] 
-		& blockgroup_data$selector == blockgroup_data$selector[[i]]
-		# & blockgroup_data$crime_type == blockgroup_data$crime_type[[i]]
-		# & blockgroup_data$school_day == blockgroup_data$school_day[[i]]
-		# & blockgroup_data$school_time == blockgroup_data$school_time[[i]]
-		# & blockgroup_data$public_location == blockgroup_data$public_location[[i]]
-		]
-	
-	# calculate lag as the arithmetic mean of the count of crimes in surrounding
-	# blockgroups
-	# Note that since a cell intersects with itself, we need to account for 
-	# this when calculating the mean crime count for neighbouring cells
-	(sum(nb_vals) - blockgroup_data$count[[i]]) / (length(nb_vals) - 1)
-	
-}) %>% 
-	unlist() %>% 
-	replace_na(0)
-)
-
-# remove the composite variable
-blockgroup_data <- blockgroup_data %>% 
-	select(-selector)
-```
 
 # Export data and clean up
 
@@ -1322,12 +1630,14 @@ blockgroup_data %>%
 	# remove list and geometry columns, since we have finished calculating lags
 	# and running spatial operations
 	select(-adj, -adj_geoid) %>% 
-	# write file
-	# this uses write.csv() because of a bug with write_csv(), which unfortunately
-	# means we can't automatically GZ compress the file
-	write.csv(gzfile("../analysis_data/blockgroup_data.csv.gz"), na = "", 
-						row.names = FALSE)
+	# change type of some variables
+	mutate_at(vars(starts_with("land_cover_prop_")), ~ifelse(. > 1, 1, .)) %>% 
+	mutate_at(vars(state, census_block_group, count, school_count, 
+								 school_students, pop_total), as.integer) %>% 
+	mutate_at(vars(crime_type, period), as.factor) %>% 
+	# write data
+	write_rds("../analysis_data/blockgroup_data.Rds", compress = "gz")
 
-rm(blockgroup_data, blockgroup_outlines, code_city_outlines, code_counties)
+#rm(blockgroup_data, blockgroup_outlines, code_city_outlines, code_counties)
 ```
 
