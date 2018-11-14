@@ -26,7 +26,6 @@ so they can just be read directly from the RDS file.
 
 ```{r}
 data <- read_rds("../analysis_data/blockgroup_data.Rds") %>% 
-	select(-state, -county, -census_tract, -census_block_group) %>% 
 	glimpse()
 ```
 
@@ -56,38 +55,32 @@ data %>%
 	assert(not_na, public_location) %>%
 	print_comment("👍 public_location is a character, all values are valid with",
 								"no NA values") %>% 
-	assert(is.character, period) %>% 
-	assert(in_set("non-school day, school time", "school day, non-school time", 
-								"non-school day, non-school time", "school day, school time"), 
-				 period) %>% 
-	assert(not_na, period) %>% 
-	print_comment("👍 period is a character, all values are valid with no NA", 
-								"values") %>% 
 
 	# positive integers
 	assert(is.integer, count, school_count, school_students, pop_total) %>% 
 	assert(within_bounds(0, Inf), count, school_count, school_students, 
 				 pop_total) %>% 
 	assert(not_na, count, school_count, school_students, pop_total) %>% 
-	print_comment("👍 count, school_count, school-stude_ts and pop_total are",
+	print_comment("👍 count, school_count, school_students and pop_total are",
 								"positive integers with no NA values") %>% 
 
 	# doubles
-	assert(is.double, index_disadvantage, index_mobility, index_ethnic, 
-				 perc_teen_sc) %>% 
-	assert(not_na, index_disadvantage, index_mobility, index_ethnic, 
-				 perc_teen_sc) %>% 
-	print_comment("👍 index_disadvantage, index_mobility, index_ethnic and",
-								"perc_teen_sc are doubles with no NA values") %>% 
+	assert(is.double, index_disadvantage, index_mobility, index_ethnic,
+				 perc_teen_sc, prop_zoned_commercial_sc) %>%
+	assert(not_na, index_disadvantage, index_mobility, index_ethnic,
+				 perc_teen_sc, prop_zoned_commercial_sc) %>%
+	print_comment("👍 index_disadvantage, index_mobility, index_ethnic,",
+								"perc_teen_sc and prop_zoned_commercial_sc are doubles with no",
+								"NA values") %>% 
 
 	# doubles between zero and one
-	assert(is.double, prop_overlap, prop_developed, land_cover_prop_22, 
-				 land_cover_prop_23, land_cover_prop_24) %>% 
-	assert(within_bounds(0, 1), prop_overlap, prop_developed, land_cover_prop_22, 
-				 land_cover_prop_23, land_cover_prop_24) %>% 
-	print_comment("👍 prop_overlap, prop_developed, land_cover_prop_22,",
-								"land_cover_prop_23 and land_cover_prop_24 are doubles between",
-								"0 and 1 with no NA values") %>% 
+	assert(is.double, prop_developed, land_cover_prop_22, land_cover_prop_23,
+				 land_cover_prop_24, prop_zoned_commercial) %>%
+	assert(within_bounds(0, 1), prop_developed, land_cover_prop_22,
+				 land_cover_prop_23, land_cover_prop_24, prop_zoned_commercial) %>%
+	print_comment("👍 prop_developed, land_cover_prop_22, land_cover_prop_23,",
+								"land_cover_prop_24 and prop_zoned_commercial are doubles",
+								"between 0 and 1 with no NA values") %>% 
 
 	# positive doubles
 	assert(is.double, area_land, area_water, count_lag) %>% 
@@ -97,9 +90,13 @@ data %>%
 								"positive doubles with no NA values") %>% 
 
 	# factors
-	assert(is.factor, crime_type) %>% 
-	assert(not_na, crime_type) %>%
-	print_comment("👍 crime_type is a factor with no NA values") %>% 
+	assert(is.factor, crime_type, period) %>% 
+	assert(not_na, crime_type, period) %>%
+	print_comment("👍 crime_type and period are factors with no NA values") %>% 
+	assert(in_set("non-school day, school time", "school day, non-school time", 
+								"non-school day, non-school time", "school day, school time"), 
+				 period) %>% 
+	print_comment("👍 all values of period are valid") %>% 
 
 	# logicals
 	assert(is.logical, school_day, school_time, school) %>% 
@@ -144,7 +141,7 @@ The histograms suggest some outlier blockgroups. We can identify these:
 
 ```{r}
 data %>% 
-	filter(count > 300)
+	filter(count > 300, prop_zoned_commercial < 0.5)
 ```
 
 
@@ -172,7 +169,7 @@ these respects to places without schools.
 ```{r}
 map_df(
 	c("index_disadvantage", "index_mobility", "index_ethnic", "perc_teen_sc", 
-		"prop_developed"), 
+		"prop_developed", "prop_zoned_commercial"), 
 	function (x) {
 		wilcox.test(as.formula(paste(x, "~ school")), data = data) %>% 
 			tidy() %>% 
@@ -222,7 +219,8 @@ data_h1 <- data %>%
 		index_mobility = first(index_mobility),
 		index_ethnic = first(index_ethnic),
 		perc_teen_sc = first(perc_teen_sc),
-		prop_developed = first(prop_developed)
+		prop_developed = first(prop_developed),
+		prop_zoned_commercial_sc = first(prop_zoned_commercial_sc)
 	) %>% 
 	# we must ungroup() before mutate() otherwise dplyr will mutate by group
 	ungroup() %>% 
@@ -249,8 +247,7 @@ and by period. The model must also control for socio-economic variables and for
 spatial autocorrelation.
 
 ```{r}
-f$h1 <- count ~ count_lag_sc + (pop_total_sc + index_disadvantage + 
-	index_mobility + index_ethnic + perc_teen_sc + school | period) +
+f$h1 <- count ~ count_lag_sc + (prop_zoned_commercial_sc + school | period) +
 	(school | city_name)
 
 system.time(

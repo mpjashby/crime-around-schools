@@ -434,7 +434,7 @@ blockgroup_outlines <- blockgroup_outlines %>%
 				 -perc_moved, -perc_teen, -perc_eth_white, -perc_eth_black, 
 				 -perc_eth_hispanic, -perc_eth_asian, -perc_eth_other,
 				 -perc_no_degree_sc, -perc_poverty_sc, -median_income_sc, 
-				 -perc_renters_sc, -perc_moved_sc, -perc_teen_sc) %>% 
+				 -perc_renters_sc, -perc_moved_sc) %>% 
 	glimpse()
 
 rm(acs_data)
@@ -446,263 +446,255 @@ rm(acs_data)
 We can download zoning data from city websites (using cached versions if
 appropriate) and then convert local codes to consistent high-level types.
 
-```{r}
-zoning <- list()
-
-# Chicago
-download_if_needed(
-	remote = "https://data.cityofchicago.org/api/geospatial/7cve-jgbp?method=export&format=GeoJSON",
-	local = "../original_data/zoning_chicago.geojson"
-)
-zoning$chi <- st_read("../original_data/zoning_chicago.geojson") %>% 
-	mutate(
-		zone_code = str_sub(zone_class, 0, 2),
-		zone_code_main = str_sub(zone_class, 0, 1),
-		land_use = case_when(
-			zone_code == "DR" ~ "residential",
-			zone_code == "PM" ~ "commercial",
-			zone_code == "PO" ~ "public open space",
-			zone_code_main %in% c("B", "C", "M") ~ "commercial",
-			zone_code_main == "D" ~ "downtown",
-			zone_code_main == "R" ~ "residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code, -zone_code_main)
-
-# Detroit
-download_if_needed(
-	remote = "https://data.detroitmi.gov/api/geospatial/62rv-kyp9?method=export&format=GeoJSON",
-	local = "../original_data/zoning_detroit.geojson"
-)
-zoning$dtt <- st_read("../original_data/zoning_detroit.geojson") %>% 
-	mutate(
-		zone_code = str_sub(zcode_n, 0, 1),
-		land_use = case_when(
-			zcode_n == "750" ~ "commercial",
-			zone_code == "1" ~ "residential",
-			zone_code %in% c("2", "3", "5", "6") ~ "commercial",
-			zone_code == "4" ~ "downtown",
-			zone_code == "8" ~ "public open space",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code)
-
-# Fort Worth
-download_if_needed(
-	remote = "http://mapit.fortworthtexas.gov/giszipfiles/ADM_ZONING.zip",
-	local = "../original_data/zoning_fort_worth.zip"
-)
-if (!dir.exists("../original_data/zoning_fort_worth/")) {
-	unzip(zipfile = "../original_data/zoning_fort_worth.zip", 
-				exdir = "../original_data/zoning_fort_worth/")
-}
-zoning$ftw <- st_read("../original_data/zoning_fort_worth/ADM_ZONING.shp") %>% 
-	mutate(
-		zone_code = str_extract(ZONING, "^\\w+"),
-		land_use = case_when(
-			zone_code %in% c("E", "ER", "F", "FR", "G", "I", "J", "K") ~ "commercial",
-			zone_code == "H" ~ "downtown",
-			zone_code %in% c("A", "AR", "B", "C", "CR", "D", "MH", "R1", "R2", "UR") ~ 
-				"residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	st_transform(4326)
-
-# Kansas City
-download_if_needed(
-	remote = "http://maps.kcmo.org/apps/download/GisDataDownload/Other.gdb.zip",
-	local = "../original_data/zoning_kansas_city.zip"
-)
-if (!dir.exists("../original_data/zoning_kansas_city/")) {
-	unzip(zipfile = "../original_data/zoning_kansas_city.zip", 
-				exdir = "../original_data/zoning_kansas_city/")
-}
-zoning$kcm <- st_read("../original_data/zoning_kansas_city/Other.gdb", 
-											layer = "Zoning") %>% 
-	mutate(
-		zone_code = str_sub(LANDUSE, 0, 1),
-		land_use = case_when(
-			zone_code == "D" ~ "downtown",
-			LANDUSE %in% c("Commercial", "Industrial") ~ "commercial",
-			LANDUSE == "Residential" ~ "residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code) %>% 
-	rename(geometry = SHAPE) %>% 
-	st_transform(4326)
-
-# Los Angeles
-download_if_needed(
-	remote = "https://opendata.arcgis.com/datasets/49ad06a6b8c945debbbea865b1832ee2_0.geojson",
-	local = "../original_data/zoning_los_angeles.geojson"
-)
-zoning$lax <- st_read("../original_data/zoning_los_angeles.geojson") %>% 
-	mutate(land_use = case_when(
-		ZONE_SMRY %in% c("COMMERCIAL", "INDUSTRIAL", "PARKING") ~ "commercial",
-		ZONE_SMRY == "RESIDENTIAL" ~ "residential",
-		ZONE_SMRY == "OPEN SPACE" ~ "public open space",
-		TRUE ~ "other"
-	))
-
-# Louisville
-download_if_needed(
-	remote = "https://opendata.arcgis.com/datasets/901f9c3321494238ac38a01d7e96d932_19.geojson",
-	local = "../original_data/zoning_louisville.geojson"
-)
-zoning$lou <- st_read("../original_data/zoning_louisville.geojson") %>% 
-	mutate(land_use = case_when(
-		ZONING_TYPE %in% c("COMMERCIAL-INDUSTRIAL", "INDUSTRIAL", "OFFICE") ~ 
-			"commercial",
-		ZONING_TYPE == "RESIDENTIAL" ~ "residential",
-		TRUE ~ "other"
-	))
-
-# New York
-download_if_needed(
-	remote = "https://www1.nyc.gov/assets/planning/download/zip/data-maps/open-data/nycgiszoningfeatures_201810shp.zip",
-	local = "../original_data/zoning_new_york.zip"
-)
-if (!dir.exists("../original_data/zoning_new_york/")) {
-	unzip(zipfile = "../original_data/zoning_new_york.zip", 
-				exdir = "../original_data/zoning_new_york/")
-}
-zoning$nyc <- st_read("../original_data/zoning_new_york/nyzd.shp") %>% 
-	mutate(
-		zone_code = str_sub(ZONEDIST, 0, 1),
-		land_use = case_when(
-			ZONEDIST == "BALL FIELD" ~ "other",
-			ZONEDIST %in% c("PARK", "PLAYGROUND", "PUBLIC PLACE") ~ 
-				"public open space",
-			zone_code %in% c("C", "M") ~ "commercial",
-			zone_code == "R" ~ "residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code) %>% 
-	st_transform(4326)
-
-# San Francisco
-download_if_needed(
-	remote = "https://data.sfgov.org/api/geospatial/xvjh-uu28?method=export&format=GeoJSON",
-	local = "../original_data/zoning_san_francisco.geojson"
-)
-zoning$sfo <- st_read("../original_data/zoning_san_francisco.geojson") %>% 
-	mutate(land_use = case_when(
-		zoning %in% c("C-2", "M-1", "M-2", "MB-O", "MB-RA", "MUO", "PM-CF", "SALI", 
-									"SLI", "SSO", "WMUO") ~ "commercial",
-		str_sub(zoning, 0, 2) %in% c("NC", "PD", "RC") ~ "commercial",
-		zoning %in% c("C-3-G", "C-3-O", "C-3-O(SD)", "C-3-R", "C-3-S", "CCB", 
-									"CVR") ~ "downtown",
-		zoning %in% c("P", "PM-OS", "TI-OS", "YBI-OS") ~ "public open space",
-		zoning %in% c("CRNC", "MUR", "PM-R", "PM-S", "RED", "RED-MX", "RH DTR", 
-									"SB-DTR", "TB DTR", "TI-R", "YBI-R") ~ "residential",
-		str_sub(zoning, 0, 2) %in% c("RH", "RM", "RT") ~ "residential",
-		TRUE ~ "other"
-	))
-
-# Tucson
-download_if_needed(
-	remote = "https://opendata.arcgis.com/datasets/489d09483d36427abd9738ee7d2a1de8_19.geojson",
-	local = "../original_data/zoning_tucson.geojson"
-)
-zoning$tus <- st_read("../original_data/zoning_tucson.geojson") %>% 
-	mutate(
-		zone_code = str_extract(ORIG_ZONE, "^\\w+"),
-		land_use = case_when(
-			zone_code %in% c("C", "CB", "CI", "I", "NC", "O", "P", "RVC") ~ "commercial",
-			zone_code %in% c("IR", "OS") ~ "public open space",
-			zone_code %in% c("CR", "MH", "R", "RV", "RX", "SH", "SR") ~ "residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code)
-
-# Virginia Beach
-download_if_needed(
-	remote = "http://gis.data.vbgov.com/datasets/a3558a2790384bd0950cbdbe69e29da8_2.geojson",
-	local = "../original_data/zoning_virginia_beach.geojson"
-)
-zoning$vib <- st_read("../original_data/zoning_virginia_beach.geojson") %>% 
-	mutate(
-		zone_code = str_sub(ZONING, 0, 1),
-		land_use = case_when(
-			ZONING %in% c("RT1", "RT3", "RT4") ~ "commercial",
-			ZONING %in% c("B3", "CBC") ~ "downtown",
-			ZONING == "P1" ~ "public open space",
-			ZONING %in% c("A12", "A18", "A24", "A36") ~ "residential",
-			zone_code %in% c("B", "I", "O") ~ "commercial",
-			zone_code == "R" ~ "residential",
-			TRUE ~ "other"
-		)
-	) %>% 
-	select(-zone_code)
-
-# union polygons
-zoning <- map(zoning, function (x) {
-	x %>% 
-		filter(st_is_valid(x)) %>% 
-		group_by(land_use) %>% 
-		summarise()
-})
-
-# merge and save data
-zoning %>% 
-	reduce(rbind) %>% 
-	rename(geometry = geom) %>% 
-	rmapshaper::ms_simplify(keep = 0.1) %>% 
-	filter(st_is_valid(.)) %>% 
-	st_write("../analysis_data/zoning.gpkg")
-
-rm(zoning)
-```
-
 Using the zoning data we can calculate the proportion of each blockgroup that
 is zoned as either residential or commercial, and from that calculate the ratio
 between the two.
 
 ```{r}
-zoning <- st_read("../analysis_data/zoning.gpkg")
+if (!file.exists("../original_data/zoning.Rds")) {
+	
+	zoning <- list()
+	
+	# Chicago
+	download_if_needed(
+		remote = "https://data.cityofchicago.org/api/geospatial/7cve-jgbp?method=export&format=GeoJSON",
+		local = "../original_data/zoning_chicago.geojson"
+	)
+	zoning$chi <- st_read("../original_data/zoning_chicago.geojson", 
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_sub(zone_class, 0, 2),
+			zone_code_main = str_sub(zone_class, 0, 1),
+			land_use = case_when(
+				zone_code == "DR" ~ "residential",
+				zone_code %in% c("PD", "PM") ~ "commercial",
+				zone_code == "PO" ~ "public open space",
+				zone_code_main %in% c("B", "C", "D", "M") ~ "commercial",
+				zone_code_main == "R" ~ "residential",
+				TRUE ~ "other"
+			),
+			city_name = "Chicago"
+		)
+	
+	# Detroit
+	download_if_needed(
+		remote = "https://data.detroitmi.gov/api/geospatial/62rv-kyp9?method=export&format=GeoJSON",
+		local = "../original_data/zoning_detroit.geojson"
+	)
+	zoning$dtt <- st_read("../original_data/zoning_detroit.geojson", 
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_sub(zcode_n, 0, 1),
+			land_use = case_when(
+				zone_code == "1" ~ "residential",
+				zone_code %in% c("2", "3", "4", "5", "6", "7") ~ "commercial",
+				zone_code == "8" ~ "public open space",
+				TRUE ~ "other"
+			),
+			city_name = "Detroit"
+		)
+	
+	# Fort Worth
+	download_if_needed(
+		remote = "http://mapit.fortworthtexas.gov/giszipfiles/ADM_ZONING.zip",
+		local = "../original_data/zoning_fort_worth.zip"
+	)
+	if (!dir.exists("../original_data/zoning_fort_worth/")) {
+		unzip(zipfile = "../original_data/zoning_fort_worth.zip", 
+					exdir = "../original_data/zoning_fort_worth/")
+	}
+	zoning$ftw <- st_read("../original_data/zoning_fort_worth/ADM_ZONING.shp",
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_extract(ZONING, "^\\w+"),
+			land_use = case_when(
+				zone_code %in% c("BU", "CB", "E", "EP", "ER", "F", "FR", "G", "H", "I", 
+												 "IP", "J", "K", "MU", "NS", "OM", "PD", "PI", "SY", 
+												 "TL") ~ "commercial",
+				zone_code %in% c("A", "AR", "B", "C", "CR", "D", "MH", "R1", "R2", 
+												 "UR") ~ "residential",
+				TRUE ~ "other" # AG (agri), CF (community facility), O (flood plain)
+			),
+			city_name = "Fort Worth"
+		) %>% 
+		st_transform(4326)
+	
+	# Kansas City
+	download_if_needed(
+		remote = "http://maps.kcmo.org/apps/download/GisDataDownload/Other.gdb.zip",
+		local = "../original_data/zoning_kansas_city.zip"
+	)
+	if (!dir.exists("../original_data/zoning_kansas_city/")) {
+		unzip(zipfile = "../original_data/zoning_kansas_city.zip", 
+					exdir = "../original_data/zoning_kansas_city/")
+	}
+	zoning$kcm <- st_read("../original_data/zoning_kansas_city/Other.gdb", 
+												layer = "Zoning", quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_sub(CLASSIFICATION1, 0, 1),
+			land_use = case_when(
+				zone_code == "R" ~ "residential",
+				LANDUSE %in% c("Commercial", "Industrial") ~ "commercial",
+				LANDUSE == "Residential" ~ "residential",
+				TRUE ~ "other" # Agricultural/Vacant
+			),
+			city_name = "Kansas City"
+		) %>% 
+		rename(geometry = SHAPE) %>% 
+		st_transform(4326)
+	
+	# Los Angeles
+	download_if_needed(
+		remote = "https://opendata.arcgis.com/datasets/49ad06a6b8c945debbbea865b1832ee2_0.geojson",
+		local = "../original_data/zoning_los_angeles.geojson"
+	)
+	zoning$lax <- st_read("../original_data/zoning_los_angeles.geojson",
+												quiet = TRUE) %>% 
+		mutate(land_use = case_when(
+			ZONE_CLASS %in% c("A1", "A1(UV)", "RA") ~ "residential",
+			ZONE_CLASS %in% c("A2", "A2(PV)") ~ "commercial",
+			ZONE_SMRY %in% c("COMMERCIAL", "INDUSTRIAL", "PARKING") ~ "commercial",
+			ZONE_SMRY == "RESIDENTIAL" ~ "residential",
+			ZONE_SMRY == "OPEN SPACE" ~ "public open space",
+			TRUE ~ "other" # PUBLIC FACILITY
+		),
+		city_name = "Los Angeles"
+		)
+	
+	# Louisville
+	download_if_needed(
+		remote = "https://opendata.arcgis.com/datasets/901f9c3321494238ac38a01d7e96d932_19.geojson",
+		local = "../original_data/zoning_louisville.geojson"
+	)
+	zoning$lou <- st_read("../original_data/zoning_louisville.geojson",
+												quiet = TRUE) %>% 
+		mutate(land_use = case_when(
+			ZONING_TYPE %in% c("COMMERCIAL-INDUSTRIAL", "INDUSTRIAL", "OFFICE",
+												 "SPECIAL") ~ "commercial",
+			ZONING_TYPE == "RESIDENTIAL" ~ "residential",
+			TRUE ~ "other" # roads (ZONING_TYPE is blank)
+		),
+		city_name = "Louisville"
+		)
+	
+	# New York
+	download_if_needed(
+		remote = "https://www1.nyc.gov/assets/planning/download/zip/data-maps/open-data/nycgiszoningfeatures_201810shp.zip",
+		local = "../original_data/zoning_new_york.zip"
+	)
+	if (!dir.exists("../original_data/zoning_new_york/")) {
+		unzip(zipfile = "../original_data/zoning_new_york.zip", 
+					exdir = "../original_data/zoning_new_york/")
+	}
+	zoning$nyc <- st_read("../original_data/zoning_new_york/nyzd.shp",
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_sub(ZONEDIST, 0, 1),
+			land_use = case_when(
+				ZONEDIST == "BALL FIELD" ~ "commercial",
+				ZONEDIST %in% c("PARK", "PLAYGROUND", "PUBLIC PLACE") ~ 
+					"public open space",
+				zone_code %in% c("C", "M") ~ "commercial",
+				zone_code == "R" ~ "residential",
+				TRUE ~ "other"
+			),
+			city_name = "New York"
+		) %>% 
+		st_transform(4326)
+	
+	# San Francisco
+	download_if_needed(
+		remote = "https://data.sfgov.org/api/geospatial/xvjh-uu28?method=export&format=GeoJSON",
+		local = "../original_data/zoning_san_francisco.geojson"
+	)
+	zoning$sfo <- st_read("../original_data/zoning_san_francisco.geojson",
+												quiet = TRUE) %>% 
+		mutate(land_use = case_when(
+			zoning %in% c("C-2", "M-1", "M-2", "MB-O", "MB-RA", "MUO", "PM-CF", 
+										"SALI", "SLI", "SSO", "WMUO", "C-3-G", "C-3-O", "C-3-O(SD)", 
+										"C-3-R", "C-3-S", "CCB", "CVR", "MR-MU", "P70-MU", "PM-MU1", 
+										"PM-MU2", "TI-MU", "TI-PCI", "YBI-PCI", "YBI-MU", "MUG", 
+										"UMU", "WMUG", "HP-RA", "SPD") ~ "commercial",
+			str_sub(zoning, 0, 2) %in% c("NC", "PD", "RC") ~ "commercial",
+			zoning %in% c("P", "PM-OS", "TI-OS", "YBI-OS") ~ "public open space",
+			zoning %in% c("CRNC", "MUR", "PM-R", "PM-S", "RED", "RED-MX", "RH DTR", 
+										"SB-DTR", "TB DTR", "TI-R", "YBI-R") ~ "residential",
+			str_sub(zoning, 0, 2) %in% c("RH", "RM", "RT") ~ "residential",
+			TRUE ~ "other"
+		),
+		city_name = "San Francisco"
+		)
+	
+	# Tucson
+	download_if_needed(
+		remote = "https://opendata.arcgis.com/datasets/489d09483d36427abd9738ee7d2a1de8_19.geojson",
+		local = "../original_data/zoning_tucson.geojson"
+	)
+	zoning$tus <- st_read("../original_data/zoning_tucson.geojson",
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_extract(ORIG_ZONE, "^\\w+"),
+			land_use = case_when(
+				zone_code %in% c("C", "CB", "CI", "I", "HC", "MU", "NC", "O", "OCR", 
+												 "P", "PAD", "RVC", "TR", "U1C", "UC") ~ "commercial",
+				zone_code %in% c("IR", "OS") ~ "public open space",
+				zone_code %in% c("CMH", "CR", "HLR", "MH", "R", "RH", "RV", "RX", "SH", 
+												 "SR", "TH") ~ "residential",
+				TRUE ~ "other"# U, UC, UR
+			),
+			city_name = "Tucson"
+		)
+	
+	# Virginia Beach
+	download_if_needed(
+		remote = "http://gis.data.vbgov.com/datasets/a3558a2790384bd0950cbdbe69e29da8_2.geojson",
+		local = "../original_data/zoning_virginia_beach.geojson"
+	)
+	zoning$vib <- st_read("../original_data/zoning_virginia_beach.geojson",
+												quiet = TRUE) %>% 
+		mutate(
+			zone_code = str_sub(ZONING, 0, 1),
+			land_use = case_when(
+				ZONING %in% c("B3", "CBC", "H1", "RT1", "RT3", "RT4") ~ "commercial",
+				ZONING == "P1" ~ "public open space",
+				str_sub(ZONING, 0, 3) == "PDH" ~ "residential",
+				ZONING %in% c("A12", "A18", "A24", "A36", "AG1", "AG2") ~ "residential",
+				zone_code %in% c("B", "I", "O") ~ "commercial",
+				zone_code == "R" ~ "residential",
+				TRUE ~ "other" # PDH*
+			),
+			city_name = "Virginia Beach"
+		)
+	
+	# merge data
+	zoning <- zoning %>%
+		map(~ select(., land_use, city_name, geometry)) %>% 
+		map(~ filter(., st_is_valid(.), !st_is_empty(.))) %>% 
+		reduce(rbind) %>% 
+		group_by(land_use, city_name) %>% 
+		summarise() %>% 
+		ungroup()
+	
+	# save data
+	write_rds(zoning, "../original_data/zoning.Rds", compress = "bz")
+	
+} else {
+	
+	zoning <- read_rds("../original_data/zoning.Rds")
+	
+}
 
 # calculate proportion of each blockgroup that has commercial zoning
 blockgroup_outlines <- blockgroup_outlines %>% 
-	select(-prop_overlap) %>% 
+	# select(-prop_overlap) %>% 
 	add_overlap_area(filter(zoning, 
 													land_use %in% c("commercial", "downtown"))) %>% 
-	rename(prop_zoned_commercial = prop_overlap)
-```
-
-
-
-## Facility data
-
-We can obtain details of retail facilities from OSM, but note that: 
-
-  * some may be stored as polygons and some as points,
-  * some may be coded as building=retail and some as shop=*
-
-So it is necessary to do multiple queries.
-
-```{r}
-cities %>% 
-	slice(2) %>% 
-	apply(1, function (x) {
-		
-		# get data on retail buildings
-		retail <- opq(bbox = paste0(x['name'], ", ", x['state'])) %>% 
-			add_osm_feature(key = "building", value = "retail", 
-											match_case = FALSE) %>% 
-			osmdata_sf()
-		
-		# get data on shops
-		shops <- opq(bbox = paste0(x['name'], ", ", x['state'])) %>% 
-			add_osm_feature(key = "shop", match_case = FALSE) %>% 
-			osmdata_sf()
-
-})
+	rename(prop_zoned_commercial = prop_overlap) %>% 
+	group_by(city_name) %>% 
+	mutate(
+		prop_zoned_commercial_sc = scale(prop_zoned_commercial)
+	) %>% 
+	ungroup()
 ```
 
 
@@ -1363,10 +1355,6 @@ blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
 	nb_vals <- blockgroup_data$count[
 		blockgroup_data$geoid %in% blockgroup_data$adj_geoid[[i]] 
 		& blockgroup_data$selector == blockgroup_data$selector[[i]]
-		# & blockgroup_data$crime_type == blockgroup_data$crime_type[[i]]
-		# & blockgroup_data$school_day == blockgroup_data$school_day[[i]]
-		# & blockgroup_data$school_time == blockgroup_data$school_time[[i]]
-		# & blockgroup_data$public_location == blockgroup_data$public_location[[i]]
 		]
 	
 	# calculate lag as the arithmetic mean of the count of crimes in surrounding
@@ -1619,7 +1607,7 @@ a population of zero. In particular, this removes LAX, O'Hare and Rikers Island,
 which could otherwise be problematic.
 
 ```{r}
-blockgroup_data <- blockgroup_data %>% filter(pop_total > 0)
+blockgroup_data <- blockgroup_data %>% filter(pop_total > 0 & area_land > 0)
 ```
 
 
@@ -1630,10 +1618,15 @@ blockgroup_data %>%
 	# remove list and geometry columns, since we have finished calculating lags
 	# and running spatial operations
 	select(-adj, -adj_geoid) %>% 
+	# remove redundant geographic identifiers
+	select(-state, -county, -census_tract, -census_block_group) %>% 
+	# clamp proportion variables to have a maximum value of 1 to deal with
+	# rounding errors introduced in previous steps
+	mutate_at(vars(starts_with("land_cover_prop_"), prop_zoned_commercial), 
+						~ifelse(. > 1, 1, .)) %>% 
 	# change type of some variables
-	mutate_at(vars(starts_with("land_cover_prop_")), ~ifelse(. > 1, 1, .)) %>% 
-	mutate_at(vars(state, census_block_group, count, school_count, 
-								 school_students, pop_total), as.integer) %>% 
+	mutate_at(vars(count, school_count, school_students, pop_total), 
+						as.integer) %>% 
 	mutate_at(vars(crime_type, period), as.factor) %>% 
 	# write data
 	write_rds("../analysis_data/blockgroup_data.Rds", compress = "gz")
