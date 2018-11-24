@@ -25,48 +25,6 @@ No pre-processing was requried for the data for this project. All processing of
 data before analysis is done in this file.
 
 
-# Set up basic variables
-
-```{r}
-# Create vector of counties containing CODE cities
-# Note that Kansas City and New York City are in multiple counties
-code_counties <- c(
-	"17031", # Cook County, IL
-	"26163", # Wayne County, MI
-	"48121", # Denton County, TX
-	"48439", # Tarrant County, TX
-	"29095", # Jackson County, KY
-	"29047", # Clay County, KY
-	"29037", # Cass County, KY
-	"29165", # Platte County, KY
-	"06037", # Los Angeles County, CA
-	"21111", # Jefferson County, KY
-	"36005", # Bronx County, NY
-	"36047", # Kings County, NY
-	"36061", # New York County, NY
-	"36081", # Queens County, NY
-	"36085", # Richmond County, NY
-	"06075", # San Francisco County, CA
-	"04019", # Pima County, AZ
-	"51810" # Virginia Beach County, VA
-)
-# Create list of identifiers for CODE cities
-cities <- tribble(
-  ~name, ~fips, ~prefix, ~state,
-  "Chicago",        "17", "chi", "IL",
-  "Detroit",        "26", "dtt", "MI",
-  "Fort Worth",     "48", "ftw", "TX",
-  "Kansas City",    "29", "kcm", "MO",
-  "Los Angeles",    "06", "lax", "CA",
-  "Louisville",     "21", "lou", "KY",
-  "New York",       "36", "nyc", "NY",
-  "San Francisco",  "06", "sfo", "CA",
-  "Tucson",         "04", "tus", "AZ",
-  "Virginia Beach", "51", "vib", "VA"
-)
-```
-
-
 # Neighbourhood data
 
 
@@ -1250,7 +1208,12 @@ crime_counts <- crime_data %>%
 	mutate(
 		crime_type = as.factor(case_when(
 			offense_code %in% c("13A", "13B", "13C") ~ "assault",
-			offense_code %in% c("12A") ~ "robbery", # only personal robbery
+			offense_code == c("12A") ~ "robbery", # only personal robbery
+			# offense_code == c("22A") ~ "burglary", # only residential burglary
+			# offense_code == c("240") ~ "theft of vehicle",
+			# offense_group == "fraud offenses (except counterfeiting/forgery and bad checks)" ~ 
+			# 	"fraud",
+			# offense_code %in% c("200", "290") ~ "damage/arson",
 			TRUE ~ NA_character_
 		)),
 		blockgroup_id = paste0(str_pad(state, 2, pad = "0"), county, census_tract,
@@ -1405,12 +1368,14 @@ school_info <- read_csv("../original_data/ccd_sch_029_1516_w_1a_011717.csv") %>%
 		school_type = SCH_TYPE_TEXT,
 		school_status = SY_STATUS_TEXT,
 		school_level = LEVEL,
+		grade_min = GSLO,
+		grade_max = GSHI,
 		charter_school = CHARTER_TEXT,
 		virtual_school = VIRTUAL
 	) %>% 
 	mutate(
 		school_level = case_when(
-			school_level == 1 ~ "Primary",
+			school_level == 1 ~ "Elementary",
 			school_level == 2 ~ "Middle",
 			school_level == 3 ~ "High",
 			school_level == 4 ~ "Other",
@@ -1453,10 +1418,18 @@ school_characteristics <- read_csv("../original_data/ccd_sch_129_1516_w_1a_01171
 # Import student numbers
 school_membership <- read_csv("../original_data/ccd_sch_052_1516_w_1a_011717.csv") %>% 
 	select(
-		school_code = NCESSCH,
-		students = TOTAL
+		school_code = NCESSCH, 
+		students = TOTAL, 
+		matches("^G\\d")
 	) %>% 
 	glimpse()
+
+# Import staff numbers
+school_staff <- read_csv("../original_data/ccd_sch_059_1516_w_2a_011717.csv") %>% 
+	select(
+		school_code = NCESSCH, 
+		staff = FTE
+	)
 ```
 
 ```{r}
@@ -1484,7 +1457,8 @@ school_data <- school_locations %>%
 	left_join(school_info, by = c("school_code")) %>% 
 	left_join(school_characteristics, by = c("school_code")) %>% 
 	left_join(school_membership, by = c("school_code")) %>% 
-	mutate(students = ifelse(students < 0 | is.na(students), 0, students)) %>% 
+	left_join(school_staff, by = c("school_code")) %>% 
+	# mutate(students = ifelse(students < 0 | is.na(students), 0, students)) %>% 
 	glimpse()
 
 # remove temporary variables
@@ -1510,10 +1484,23 @@ private_schools <- read_csv("../original_data/pss1516_pu.csv") %>%
 		county = pcnty,
 		latitude = latitude16,
 		longitude = longitude16,
+		G01 = p190,
+		G02 = p200,
+		G03 = p210,
+		G04 = p220,
+		G05 = p230,
+		G06 = p240,
+		G07 = p250,
+		G08 = p260,
+		G09 = p270,
+		G10 = p280,
+		G11 = p290,
+		G12 = p300,
+		staff = numteach
 	) %>% 
 	mutate(
 		school_level = case_when(
-			school_level == 1 ~ "Primary",
+			school_level == 1 ~ "Elementary",
 			school_level == 2 ~ "Middle",
 			school_level == 3 ~ "High",
 			school_level == 4 ~ "Other",
@@ -1570,26 +1557,108 @@ approximately students aged 10 and over). We will exclude very-small schools
 school_counts <- school_data %>% 
 	st_set_geometry(NULL) %>% 
 	filter(
-		school_level %in% c("High", "Middle"),
+		!school_level %in% c("Other", "Not known"),
 		!school_status %in% c("Closed", "Future School", "Inactive"),
+		!grade_max %in% c("PK", "KG"),
 		students > 10
 	) %>% 
+	mutate_at(vars("students", "staff", matches("^G\\d")), 
+						~ ifelse(. < 0 | is.na(.), 0, .)) %>% 
 	mutate(
-		blockgroup_id = paste0(state, county, census_tract, census_block_group)
+		blockgroup_id = paste0(state, county, census_tract, census_block_group),
+  	# we can separate student counts into elementary/secondary schools, but note
+	  # that this excludes grade 6 students because grade 6 can reasonably fall in
+	  # either elementary or secondary schools
+		students_elementary = G01 + G02 + G03 + G04 + G05,
+		students_secondary = G07 + G08 + G09 + G10 + G11 + G12,
+		school_level_final = case_when(
+			# schools with both elementary and secondary age students
+			students_elementary > 0 & students_secondary > 0 ~ "multi",
+			# schools with only elementary age students
+			students_elementary > 0 ~ "elementary",
+			# schools with only secondary age students
+			students_secondary > 0 ~ "secondary",
+			# schools with only sixth grade students
+			students_elementary == 0 & students_secondary == 0 & G06 > 0 ~ 
+				"secondary",
+			# schools without student numbers by grade but marked in CCD as elementary
+			students_elementary == 0 & students_secondary == 0 & 
+				school_level == "Elementary" ~ "elementary",
+			# schools without student numbers by grade but marked in CCD as secondary
+			students_elementary == 0 & students_secondary == 0 & 
+				school_level %in% c("Middle", "High") ~ "secondary",
+			# all other schools
+			TRUE ~ "other"
+		),
+		# now add grade 6 to the relevant student count
+		students_elementary = ifelse(school_level_final == "elementary", 
+																 students_elementary + G06, 
+																 students_elementary),
+		students_secondary = ifelse(school_level_final %in% c("secondary", "multi"), 
+																students_secondary + G06, students_secondary),
+		school_count = ifelse(school_level_final == "multi", 2, 1)
 	) %>% 
-	group_by(blockgroup_id) %>% 
+	# duplicate records for multi-level schools
+	uncount(school_count, .id = "multi_school_num") %>% 
+	# set student counts to zero for the opposite part of multi-schools
+	mutate(
+		# remove counts of elementary students from the records for the secondary
+		# part of multi-schools, and vice versa
+		students_elementary = ifelse(school_level_final == "multi" & 
+																 	multi_school_num == 2, 0, 
+																 students_elementary),
+		students_secondary = ifelse(school_level_final == "multi" & 
+																	multi_school_num == 1, 0, students_secondary),
+		# combine the two student counts
+		students = ifelse(students_elementary > 0, students_elementary, 
+											students_secondary),
+		school_level_final = case_when(
+			school_level_final == "multi" & multi_school_num == 1 ~ "elementary",
+			school_level_final == "multi" & multi_school_num == 2 ~ "secondary",
+			TRUE ~ school_level_final
+		),
+		school_type = paste(public_school, school_level_final)
+	) %>% 
+	group_by(blockgroup_id, school_type) %>% 
 	summarise(
-		school_count = n(), 
-		school_students = sum(students)
+		schools = n(),
+		students = sum(students)
+	) %>% 
+	ungroup() %>% 
+	gather(key = "key", value = "value", schools, students) %>% 
+	mutate(key = paste(school_type, key)) %>% 
+	select(-school_type) %>% 
+	spread(key, value) %>% 
+	clean_names() %>% 
+	mutate_if(is.numeric, ~ replace_na(., 0)) %>% 
+	mutate(
+		elementary_schools = private_elementary_schools + public_elementary_schools,
+		secondary_schools = private_secondary_schools + public_secondary_schools,
+		elementary_students = private_elementary_students + 
+			public_elementary_students,
+		secondary_students = private_secondary_students + public_secondary_students,
+		schools = elementary_schools + secondary_schools,
+		students = elementary_students + secondary_students
 	) %>% 
 	glimpse()
 
 # attach school counts to block groups
 blockgroup_data <- blockgroup_data %>% 
 	left_join(school_counts, by = c("geoid" = "blockgroup_id")) %>% 
-	mutate_at(vars("school_count", "school_students"), 
-						funs(ifelse(is.na(.), 0, .))) %>% 
-	mutate(school = ifelse(school_count > 0, TRUE, FALSE)) %>% 
+	mutate_at(vars(ends_with("schools"), ends_with("students")), 
+						~ replace_na(., 0)) %>% 
+	mutate_at(vars(ends_with("schools")), 
+						funs(bool = ifelse(. > 0, TRUE, FALSE))) %>% 
+	rename_at(vars(ends_with("_bool")), ~ str_sub(., 0, -7)) %>% 
+	# mutate(
+	# 	school = ifelse(schools > 0, TRUE, FALSE),
+	# 	high_school = ifelse(high_schools > 0, TRUE, FALSE),
+	# 	middle_school = ifelse(middle_schools > 0, TRUE, FALSE),
+	# 	private_high_school = ifelse(private_high_schools > 0, TRUE, FALSE),
+	# 	private_middle_school = ifelse(private_middle_schools > 0, TRUE, FALSE),
+	# 	public_high_school = ifelse(public_high_schools > 0, TRUE, FALSE),
+	# 	public_middle_school = ifelse(public_middle_schools > 0, TRUE, FALSE),
+	# ) %>% 
 	glimpse()
 
 # remove unnecessary objects
@@ -1624,12 +1693,14 @@ blockgroup_data %>%
 	# rounding errors introduced in previous steps
 	mutate_at(vars(starts_with("land_cover_prop_"), prop_zoned_commercial), 
 						~ifelse(. > 1, 1, .)) %>% 
-	# change type of some variables
-	mutate_at(vars(count, school_count, school_students, pop_total), 
+	# change count variables to integers
+	mutate_at(vars(count, ends_with("schools"), ends_with("students"), pop_total), 
 						as.integer) %>% 
 	mutate_at(vars(crime_type, period), as.factor) %>% 
 	# write data
 	write_rds("../analysis_data/blockgroup_data.Rds", compress = "gz")
+
+paste("Finished processing data on", now())
 
 #rm(blockgroup_data, blockgroup_outlines, code_city_outlines, code_counties)
 ```

@@ -11,12 +11,12 @@ We wish to test hypotheses relating to how routine activities of school
 students influence crime in surrounding areas. Specifically, if school students'
 activities cause increases in crime, we would expect:
 
-  * H1: high schools to be associated with more crime on school weekdays but not 
-    on vacation weekdays,
-  * H2: high schools to be associated with more crime during the daytime but not 
-    at night,
-  * H3: high schools to be associated with more crime on streets and against 
-    some types of business but not more crimes in dwellings,
+  * H1: high/middle schools to be associated with more violence at schools times 
+    on school weekdays but not on vacation weekdays or at non-school times,
+  * H2: high/middle schools to be associated with more violence but elementary
+    schools not to be,
+  * H3: high schools to be associated with more violence on streets and against 
+    some types of business but not more violence in dwellings,
 
 
 # Read data
@@ -57,13 +57,33 @@ data %>%
 								"no NA values") %>% 
 
 	# positive integers
-	assert(is.integer, count, school_count, school_students, pop_total) %>% 
-	assert(within_bounds(0, Inf), count, school_count, school_students, 
-				 pop_total) %>% 
-	assert(not_na, count, school_count, school_students, pop_total) %>% 
-	print_comment("👍 count, school_count, school_students and pop_total are",
-								"positive integers with no NA values") %>% 
-
+	assert(is.integer, count, schools, students, private_elementary_schools, 
+				 private_secondary_schools, public_elementary_schools, 
+				 public_secondary_schools, private_elementary_students, 
+				 private_secondary_students, public_elementary_students, 
+				 public_secondary_students, elementary_schools, secondary_schools, 
+				 elementary_students, secondary_students, pop_total) %>% 
+	assert(within_bounds(0, Inf), count, schools, students, 
+				 private_elementary_schools, private_secondary_schools, 
+				 public_elementary_schools, public_secondary_schools, 
+				 private_elementary_students, private_secondary_students, 
+				 public_elementary_students, public_secondary_students, 
+				 elementary_schools, secondary_schools, elementary_students, 
+				 secondary_students, pop_total) %>% 
+	assert(not_na, count, schools, students, private_elementary_schools, 
+				 private_secondary_schools, public_elementary_schools, 
+				 public_secondary_schools, private_elementary_students, 
+				 private_secondary_students, public_elementary_students, 
+				 public_secondary_students, elementary_schools, secondary_schools, 
+				 elementary_students, secondary_students, pop_total) %>% 
+	print_comment("👍 count, schools, students, private_elementary_schools,", 
+								"private_secondary_schools, public_elementary_schools,",
+								"public_secondary_schools, private_elementary_students,", 
+								"private_secondary_students, public_elementary_students,", 
+								"public_secondary_students, elementary_schools,", 
+								"secondary_schools, elementary_students, secondary_students",
+								"and pop_total are positive integers with no NA values") %>% 
+	
 	# doubles
 	assert(is.double, index_disadvantage, index_mobility, index_ethnic,
 				 perc_teen_sc, prop_zoned_commercial_sc) %>%
@@ -191,7 +211,9 @@ crime. We can also initiate a list for formulae.
 ```{r}
 f <- list()
 
-m <- list(
+m <- read_rds("../analysis_data/models.Rds")
+
+ci <- list(
 	"aslt" = list(),
 	"robb" = list()
 )
@@ -205,14 +227,35 @@ separate rows for offenses in public/private places.
 
 ```{r}
 data_h1 <- data %>% 
+	mutate(city_name = ifelse(str_sub(geoid, 0, 5) == "36005", "Bronx", 
+														city_name)) %>% 
+	filter(!city_name %in% c("Fort Worth", "New York")) %>% 
 	group_by(geoid, crime_type, period) %>% 
 	summarise(
 		count = sum(count),
 		count_lag = sum(count_lag),
 		city_name = first(city_name),
 		school = first(school),
-		school_count = first(school_count),
-		school_students = first(school_students),
+		schools = first(school_count),
+		students = first(school_students),
+		elementary_school = first(elementary_school),
+		elementary_schools = first(elementary_schools),
+		elementary_students = first(elementary_students),
+		secondary_school = first(secondary_school),
+		secondary_schools = first(secondary_schools),
+		secondary_students = first(secondary_students),
+		private_elementary_school = first(private_elementary_school),
+		private_elementary_schools = first(private_elementary_schools),
+		private_elementary_students = first(private_elementary_students),
+		public_elementary_school = first(public_elementary_school),
+		public_elementary_schools = first(public_elementary_schools),
+		public_elementary_students = first(public_elementary_students),
+		private_secondary_school = first(private_secondary_school),
+		private_secondary_schools = first(private_secondary_schools),
+		private_secondary_students = first(private_secondary_students),
+		public_secondary_school = first(public_secondary_school),
+		public_secondary_schools = first(public_secondary_schools),
+		public_secondary_students = first(public_secondary_students),
 		pop_total = first(pop_total),
 		pop_total_sc = first(pop_total_sc),
 		index_disadvantage = first(index_disadvantage),
@@ -227,8 +270,8 @@ data_h1 <- data %>%
 	# the count_lag variable must be scaled or the model is unlikely to converge,
 	# but this must be done after count_lag is summed
 	# first() within summarise() appears to convert factors to character, but
-	# grouping variables must be factors, so city_name and period must be 
-	# converted back to factors
+	# grouping variables in glmer() must be factors, so city_name and period must
+	# be converted back to factors
 	mutate(
 		count_lag_sc = as.numeric(scale(count_lag, center = TRUE, scale = TRUE)),
 		city_name = as.factor(city_name), 
@@ -247,14 +290,20 @@ and by period. The model must also control for socio-economic variables and for
 spatial autocorrelation.
 
 ```{r}
-f$h1 <- count ~ count_lag_sc + (prop_zoned_commercial_sc + school | period) +
+f$h1 <- count ~ count_lag_sc + (pop_total_sc + index_disadvantage + 
+	index_mobility + index_ethnic + perc_teen_sc + prop_zoned_commercial_sc + 
+	private_elementary_school + public_elementary_school + 
+	private_secondary_school + public_secondary_school | period) + 
 	(school | city_name)
 
 system.time(
-	m$aslt$h1 <- glmer.nb(
+	m$aslt$h1_sample <- glmer.nb(
 		f$h1, 
-		data = subset(data_h1, crime_type == "assault" & 
-										city_name != "Fort Worth"),
+		data = data_h1 %>% 
+			filter(crime_type == "assault") %>% 
+			group_by(city_name) %>% 
+			sample_frac(0.05) %>% 
+			ungroup(),
 		control = glmerControl(optCtrl = list(maxfun = 10^7), calc.derivs = FALSE)
 	)
 )

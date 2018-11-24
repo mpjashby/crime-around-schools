@@ -25,6 +25,8 @@ library("broom")
 library("sf")
 # checks on data
 library("assertr")
+# tidying column names
+library("janitor")
 # download Tiger Line data
 library("tigris")
 # download ACS data
@@ -39,6 +41,48 @@ library("tidycensus")
 source("census_api_key.R")
 ```
 
+
+
+# Basic variables
+
+```{r}
+# Create vector of counties containing CODE cities
+# Note that Kansas City and New York City are in multiple counties
+code_counties <- c(
+	"17031", # Cook County, IL
+	"26163", # Wayne County, MI
+	"48121", # Denton County, TX
+	"48439", # Tarrant County, TX
+	"29095", # Jackson County, KY
+	"29047", # Clay County, KY
+	"29037", # Cass County, KY
+	"29165", # Platte County, KY
+	"06037", # Los Angeles County, CA
+	"21111", # Jefferson County, KY
+	"36005", # Bronx County, NY
+	"36047", # Kings County, NY
+	"36061", # New York County, NY
+	"36081", # Queens County, NY
+	"36085", # Richmond County, NY
+	"06075", # San Francisco County, CA
+	"04019", # Pima County, AZ
+	"51810" # Virginia Beach County, VA
+)
+# Create list of identifiers for CODE cities
+cities <- tribble(
+  ~name, ~fips, ~prefix, ~state,
+  "Chicago",        "17", "chi", "IL",
+  "Detroit",        "26", "dtt", "MI",
+  "Fort Worth",     "48", "ftw", "TX",
+  "Kansas City",    "29", "kcm", "MO",
+  "Los Angeles",    "06", "lax", "CA",
+  "Louisville",     "21", "lou", "KY",
+  "New York",       "36", "nyc", "NY",
+  "San Francisco",  "06", "sfo", "CA",
+  "Tucson",         "04", "tus", "AZ",
+  "Virginia Beach", "51", "vib", "VA"
+)
+```
 
 
 # Functions
