@@ -38,7 +38,7 @@ library("tidycensus")
 
 ```{r}
 # This one-line file assigns a string to the variable `census_api_key`
-source("census_api_key.R")
+# source("census_api_key.R")
 ```
 
 
