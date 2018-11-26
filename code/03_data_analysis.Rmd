@@ -236,8 +236,8 @@ data_h1 <- data %>%
 		count_lag = sum(count_lag),
 		city_name = first(city_name),
 		school = first(school),
-		schools = first(school_count),
-		students = first(school_students),
+		schools = first(schools),
+		students = first(students),
 		elementary_school = first(elementary_school),
 		elementary_schools = first(elementary_schools),
 		elementary_students = first(elementary_students),
@@ -290,23 +290,32 @@ and by period. The model must also control for socio-economic variables and for
 spatial autocorrelation.
 
 ```{r}
-f$h1 <- count ~ count_lag_sc + (pop_total_sc + index_disadvantage + 
+f$h1_empty <- count ~ (1 | city_name/period)
+
+f$h1_control <- count ~ count_lag_sc + (pop_total_sc + index_disadvantage + 
+	index_mobility + index_ethnic + perc_teen_sc + prop_zoned_commercial_sc | 
+	city_name/period)
+
+f$h1_schoolonly <- count ~ count_lag_sc + (private_elementary_school + 
+	public_elementary_school + private_secondary_school + public_secondary_school
+	| city_name/period)
+
+f$h1_full <- count ~ count_lag_sc + (pop_total_sc + index_disadvantage + 
 	index_mobility + index_ethnic + perc_teen_sc + prop_zoned_commercial_sc + 
 	private_elementary_school + public_elementary_school + 
 	private_secondary_school + public_secondary_school | period) + 
-	(school | city_name)
+	(private_elementary_school + public_elementary_school + 
+	private_secondary_school + public_secondary_school | city_name)
 
 system.time(
-	m$aslt$h1_sample <- glmer.nb(
-		f$h1, 
-		data = data_h1 %>% 
-			filter(crime_type == "assault") %>% 
-			group_by(city_name) %>% 
-			sample_frac(0.05) %>% 
-			ungroup(),
-		control = glmerControl(optCtrl = list(maxfun = 10^7), calc.derivs = FALSE)
+	m$aslt$h1_schoolonly <- glmmTMB::glmmTMB(
+	  f$h1_schoolonly, 
+		data = filter(data_h1, crime_type == "assault"),
+		family = glmmTMB::nbinom2()
 	)
 )
+
+paste("Finished processing data on", now())
 
 write_rds(m, "../analysis_data/models.Rds")
 ```
