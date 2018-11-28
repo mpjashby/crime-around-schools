@@ -713,10 +713,16 @@ if (!file.exists("../original_data/crime_data.csv.gz")) {
 	
 }
 
-# add whether offence occurred (approximately) during school hours
+# add whether offence occurred (approximately) during school hours, and which
+# two-hour block it occurred in
 crime_data <- crime_data %>% mutate(
 	school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 17, 
-											 TRUE, FALSE)
+											 TRUE, FALSE),
+	date_hour = hour(date_single),
+	date_hour = ifelse(date_hour %% 2 != 0, date_hour - 1, date_hour),
+	date_hour = paste0(str_pad(date_hour, 2, side = "left", pad = "0"), ":00–", 
+										 str_pad(date_hour + 1, 2, side = "left", pad = "0"), 
+										 ":59")
 ) %>% 
 	# check that no columns except location_type and location_category contain NA
 	# values
@@ -1223,14 +1229,14 @@ crime_counts <- crime_data %>%
 	# occurring at weekends (for which school_day and school_time are both set to
 	# NA)
 	filter(!is.na(crime_type), !is.na(school_day), !is.na(school_time)) %>% 
-	group_by(blockgroup_id, crime_type, school_day, school_time, 
+	group_by(blockgroup_id, crime_type, school_day, date_hour,
 					 public_location) %>% 
 	summarise(count = n()) %>% 
 	ungroup() %>% 
-	assert(not_na, crime_type, school_day, school_time, public_location) %>% 
+	assert(not_na, crime_type, school_day, date_hour, public_location) %>% 
 	# complete() adds rows for blockgroups with zero counts in particular 
 	# categories
-	complete(blockgroup_id, crime_type, school_day, school_time, public_location, 
+	complete(blockgroup_id, crime_type, school_day, date_hour, public_location, 
 					 fill = list(count = 0)) %>% 
 	glimpse()
 
@@ -1258,14 +1264,14 @@ no_crime_blockgroups <- expand.grid(
 	geoid = unique_valid(blockgroup_data$geoid[is.na(blockgroup_data$crime_type)]),
 	crime_type = unique_valid(blockgroup_data$crime_type),
 	school_day = unique_valid(blockgroup_data$school_day),
-	school_time = unique_valid(blockgroup_data$school_time),
+	date_hour = unique_valid(blockgroup_data$date_hour),
 	public_location = unique_valid(blockgroup_data$public_location),
 	stringsAsFactors = FALSE
 ) %>% 
 	arrange(geoid)
 # 2. Add all the other columns to this data frame
 no_crime_blockgroups <- no_crime_blockgroups %>% 
-	left_join(select(blockgroup_data, -crime_type, -school_day, -school_time, 
+	left_join(select(blockgroup_data, -crime_type, -school_day, -date_hour, 
 									 -public_location), by = "geoid") %>% 
 	glimpse()
 # 3. Add these rows to the original dataset, having first filtered out the rows
@@ -1281,17 +1287,13 @@ blockgroup_data <- blockgroup_data %>%
 	filter(!(city_name %in% c("Detroit", "Kansas City", "San Francisco", "Tucson",
 														"Virginia Beach") & public_location != "other"))
 	
-# summarise the values of school_day and school_time in a single variable, to be
+# summarise the values of school_day and date_hour in a single variable, to be
 # used in multi-level modelling
-blockgroup_data <- blockgroup_data %>% 
-	mutate(period = case_when(
-		school_day == FALSE & school_time == FALSE ~ 
-			"non-school day, non-school time",
-		school_day == FALSE & school_time == TRUE ~ "non-school day, school time",
-		school_day == TRUE & school_time == FALSE ~ "school day, non-school time",
-		school_day == TRUE & school_time == TRUE ~ "school day, school time",
-		TRUE ~ NA_character_
-	))
+blockgroup_data <- blockgroup_data %>%
+	mutate(
+		period = paste(ifelse(school_day == TRUE, "school day", "non-school day"), 
+									 date_hour)
+	)
 
 # remove unnecessary objects
 rm(crime_data, crime_counts, no_crime_blockgroups)
@@ -1306,10 +1308,11 @@ mean count of crimes in queen-adjacent cells.
 ```{r}
 # create a composite variable
 blockgroup_data <- blockgroup_data %>% 
-	mutate(selector = paste(crime_type, school_day, school_time, public_location))
+	mutate(selector = paste(crime_type, school_day, date_hour, public_location))
 
 # for each row, calculate the mean of the count of surrounding blockgroups
-system.time(
+profile_file <- tempfile()
+Rprof(profile_file)
 blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
 	
 	# get crime counts for neighbouring blockgroups
@@ -1329,7 +1332,7 @@ blockgroup_data$count_lag <- map(1:nrow(blockgroup_data), function (i) {
 }) %>% 
 	unlist() %>% 
 	replace_na(0)
-)
+Rprof()
 
 # remove the composite variable
 blockgroup_data <- blockgroup_data %>% 
