@@ -43,3 +43,6 @@ code/census_api_key.R
 /outputs/
 
 /police-uk*
+
+# R profile files
+*Rprof.out
