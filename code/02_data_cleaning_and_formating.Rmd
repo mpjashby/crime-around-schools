@@ -717,22 +717,18 @@ if (!file.exists("../original_data/crime_data.csv.gz")) {
 # two-hour block it occurred in
 crime_data <- crime_data %>% 
 	mutate(
-		school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 17, 
+		school_time = ifelse(hour(date_single) >= 7 & hour(date_single) < 19, 
 												 TRUE, FALSE),
-		date_hour = hour(date_single),
-		date_hour = ifelse(
-			date_hour %% 3 == 2,
-			date_hour - 2,
-			ifelse(date_hour %% 3 == 1, date_hour - 1, date_hour)
-		),
-		# date_hour = case_when(
-		# 	date_hour %% 3 == 2 ~ date_hour - 2,
-		# 	date_hour %% 3 == 1 ~ date_hour - 1,
-		# 	TRUE ~ date_hour
-		# )
-		date_hour = paste0(str_pad(date_hour, 2, side = "left", pad = "0"), ":00–",
-											 str_pad(date_hour + 2, 2, side = "left", pad = "0"), 
-											 ":59")
+		# # for splitting into three-hour blocks
+		# date_hour = hour(date_single),
+		# date_hour = ifelse(
+		# 	date_hour %% 3 == 2,
+		# 	date_hour - 2,
+		# 	ifelse(date_hour %% 3 == 1, date_hour - 1, date_hour)
+		# ),
+		# date_hour = paste0(str_pad(date_hour, 2, side = "left", pad = "0"), ":00–",
+		# 									 str_pad(date_hour + 2, 2, side = "left", pad = "0"), 
+		# 									 ":59")
 	) %>% 
 	# { print(class(.$date_hour)); print(head(.$date_hour)) }
 	# check that no columns except location_type and location_category contain NA
@@ -1240,14 +1236,14 @@ crime_counts <- crime_data %>%
 	# occurring at weekends (for which school_day and school_time are both set to
 	# NA)
 	filter(!is.na(crime_type), !is.na(school_day), !is.na(school_time)) %>% 
-	group_by(blockgroup_id, crime_type, school_day, date_hour,
+	group_by(blockgroup_id, crime_type, school_day, school_time, 
 					 public_location) %>% 
 	summarise(count = n()) %>% 
 	ungroup() %>% 
-	assert(not_na, crime_type, school_day, date_hour, public_location) %>% 
+	assert(not_na, crime_type, school_day, school_time, public_location) %>% 
 	# complete() adds rows for blockgroups with zero counts in particular 
 	# categories
-	complete(blockgroup_id, crime_type, school_day, date_hour, public_location, 
+	complete(blockgroup_id, crime_type, school_day, school_time, public_location, 
 					 fill = list(count = 0)) %>% 
 	glimpse()
 
@@ -1275,14 +1271,14 @@ no_crime_blockgroups <- expand.grid(
 	geoid = unique_valid(blockgroup_data$geoid[is.na(blockgroup_data$crime_type)]),
 	crime_type = unique_valid(blockgroup_data$crime_type),
 	school_day = unique_valid(blockgroup_data$school_day),
-	date_hour = unique_valid(blockgroup_data$date_hour),
+	school_time = unique_valid(blockgroup_data$school_time),
 	public_location = unique_valid(blockgroup_data$public_location),
 	stringsAsFactors = FALSE
 ) %>% 
 	arrange(geoid)
 # 2. Add all the other columns to this data frame
 no_crime_blockgroups <- no_crime_blockgroups %>% 
-	left_join(select(blockgroup_data, -crime_type, -school_day, -date_hour, 
+	left_join(select(blockgroup_data, -crime_type, -school_day, -school_time, 
 									 -public_location), by = "geoid") %>% 
 	glimpse()
 # 3. Add these rows to the original dataset, having first filtered out the rows
@@ -1298,12 +1294,14 @@ blockgroup_data <- blockgroup_data %>%
 	filter(!(city_name %in% c("Detroit", "Kansas City", "San Francisco", "Tucson",
 														"Virginia Beach") & public_location != "other"))
 	
-# summarise the values of school_day and date_hour in a single variable, to be
+# summarise the values of school_day and school_time in a single variable, to be
 # used in multi-level modelling
 blockgroup_data <- blockgroup_data %>%
 	mutate(
-		period = paste(ifelse(school_day == TRUE, "school day", "non-school day"), 
-									 date_hour)
+		period = paste(
+			ifelse(school_day == TRUE, "school day", "non-school day"), 
+			ifelse(school_time == TRUE, "school time", "non-school time")
+		)
 	)
 
 # remove unnecessary objects
@@ -1319,7 +1317,7 @@ mean count of crimes in queen-adjacent cells.
 ```{r}
 # create a composite variable
 blockgroup_data <- blockgroup_data %>% 
-	mutate(selector = paste(crime_type, school_day, date_hour, public_location))
+	mutate(selector = paste(crime_type, school_day, school_time, public_location))
 
 # for each row, calculate the mean of the count of surrounding blockgroups
 profile_file <- tempfile()
