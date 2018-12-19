@@ -720,19 +720,18 @@ crime_data <- crime_data %>%
 		school_time = ifelse(hour(date_single) >= 8 & hour(date_single) <= 17, 
 												 TRUE, FALSE),
 		date_hour = hour(date_single),
-		date_hour = ifelse(
-			date_hour %% 3 == 2,
-			date_hour - 2,
-			ifelse(date_hour %% 3 == 1, date_hour - 1, date_hour)
-		),
-		# date_hour = case_when(
-		# 	date_hour %% 3 == 2 ~ date_hour - 2,
-		# 	date_hour %% 3 == 1 ~ date_hour - 1,
-		# 	TRUE ~ date_hour
-		# )
-		date_hour = paste0(str_pad(date_hour, 2, side = "left", pad = "0"), ":00–",
-											 str_pad(date_hour + 2, 2, side = "left", pad = "0"), 
-											 ":59")
+		# for splitting into school and non-school time
+		date_hour = ifelse(date_hour >= 7 & date_hour < 7, "school time", 
+											 "non-school time")
+		# # for splitting into three-hour blocks
+		# date_hour = ifelse(
+		# 	date_hour %% 3 == 2,
+		# 	date_hour - 2,
+		# 	ifelse(date_hour %% 3 == 1, date_hour - 1, date_hour)
+		# ),
+		# date_hour = paste0(str_pad(date_hour, 2, side = "left", pad = "0"), ":00–",
+		# 									 str_pad(date_hour + 2, 2, side = "left", pad = "0"), 
+		# 									 ":59")
 	) %>% 
 	# { print(class(.$date_hour)); print(head(.$date_hour)) }
 	# check that no columns except location_type and location_category contain NA
