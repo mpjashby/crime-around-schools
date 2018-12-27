@@ -757,18 +757,19 @@ mcmc_h3 <- read_rds("../analysis_data/mcmc_h3.Rds")
 ```{r H3 assault empty}
 mcmc_h3$robb_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
-	random = ~ us(1):city_period,
+	random = ~ us(1):city_location,
 	data = filter(as.data.frame(data_h3), crime_type == "assault"),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
 		G = list(
-			G1 = list(V = diag(10), n = 10)
+			G1 = list(V = diag(1), n = 1)
 		)
 	),
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
@@ -788,12 +789,13 @@ mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
 		G = list(
-			G1 = list(V = diag(10), n = 10)
+			G1 = list(V = diag(6), n = 6)
 		)
 	),
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
@@ -821,6 +823,7 @@ mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
@@ -838,21 +841,22 @@ MuMIn::model.sel(mcmc_h3$aslt_empty, mcmc_h3$aslt_control, mcmc_h3$aslt_full,
 
 
 ```{r H3 robbery empty}
-mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
+mcmc_h3$robb_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
-	random = ~ us(1):city_period,
+	random = ~ us(1):city_location,
 	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
 									!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
 		G = list(
-			G1 = list(V = diag(10), n = 10)
+			G1 = list(V = diag(1), n = 1)
 		)
 	),
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
@@ -873,12 +877,13 @@ mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
 		G = list(
-			G1 = list(V = diag(10), n = 10)
+			G1 = list(V = diag(6), n = 6)
 		)
 	),
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
@@ -907,6 +912,7 @@ mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
 	thin = 20,
 	burnin = 5000,
 	nitt = 50000,
+	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
 
