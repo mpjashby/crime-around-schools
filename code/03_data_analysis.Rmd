@@ -419,13 +419,14 @@ write_rds(mcmc_h1, "../analysis_data/mcmc_h1.Rds")
 
 
 ```{r H1 robbery full}
-mcmc_h1$aslt_full <- MCMCglmm::MCMCglmm(
+mcmc_h1$robb_full <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc + private_elementary_school +
 									public_elementary_school + private_secondary_school + 
 									public_secondary_school):city_period,
-	data = filter(as.data.frame(data_h1), crime_type == "robbery"),
+	data = filter(as.data.frame(data_h1), crime_type == "robbery", 
+								!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
@@ -433,9 +434,9 @@ mcmc_h1$aslt_full <- MCMCglmm::MCMCglmm(
 			G1 = list(V = diag(10), n = 10)
 		)
 	),
-	thin = 40,
-	burnin = 10000,
-	nitt = 100000,
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
 	verbose = FALSE,
 	pr = TRUE # needed to output the estimates/CIs for the random effects
 )
@@ -460,8 +461,8 @@ MuMIn::model.sel(mcmc_h1$robb_empty, mcmc_h1$robb_control, mcmc_h1$robb_full,
 # plot(mcmc$robb$h3_full, ask = FALSE, auto.layout = FALSE)
 ```
 
-```{r MCMC Gelman tests}
-mcmc$aslt$h1_full_4period_gelman <- parallel::mclapply(1:4, function (i) {
+```{r H1 Gelman tests}
+mcmc_h1$aslt_full_gelman <- parallel::mclapply(1:4, function (i) {
 	message("Starting iteration ", i, appendLF = TRUE)
 	MCMCglmm::MCMCglmm(
 		fixed = count ~ count_lag_sc,
@@ -485,9 +486,9 @@ mcmc$aslt$h1_full_4period_gelman <- parallel::mclapply(1:4, function (i) {
 	)
 })
 
-write_rds(mcmc, "../analysis_data/mcmc.Rds")
+write_rds(mcmc_h1, "../analysis_data/mcmc_h1.Rds")
 
-mcmc$robb$h1_full_4period_gelman <- parallel::mclapply(1:4, function (i) {
+mcmc_h1$robb_full_gelman <- parallel::mclapply(1:4, function (i) {
 	message("Starting iteration ", i, appendLF = TRUE)
 	MCMCglmm::MCMCglmm(
 		fixed = count ~ count_lag_sc,
@@ -495,7 +496,8 @@ mcmc$robb$h1_full_4period_gelman <- parallel::mclapply(1:4, function (i) {
 										index_ethnic + perc_teen_sc + private_elementary_school +
 										public_elementary_school + private_secondary_school + 
 										public_secondary_school):city_period,
-		data = filter(as.data.frame(data_h1), crime_type == "robbery"),
+		data = filter(as.data.frame(data_h1), crime_type == "robbery", 
+									!city_name %in% c("Kansas City", "Virginia Beach")),
 		family = "poisson", # MCMC deals with over-dispersion
 		prior = list(
 			R = list(V = diag(1), nu = 0.002),
@@ -511,71 +513,18 @@ mcmc$robb$h1_full_4period_gelman <- parallel::mclapply(1:4, function (i) {
 	)
 })
 
-write_rds(mcmc, "../analysis_data/mcmc.Rds")
-
-mcmc$aslt$h3_full_gelman <- parallel::mclapply(1:4, function (i) {
-	message("Starting iteration ", i, appendLF = TRUE)
-	MCMCglmm::MCMCglmm(
-		fixed = count ~ count_lag_sc,
-		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
-										index_ethnic + perc_teen_sc + private_elementary_school +
-										public_elementary_school + private_secondary_school + 
-										public_secondary_school):city_location,
-		data = filter(as.data.frame(data_h3), crime_type == "assault"),
-		family = "poisson", # MCMC deals with over-dispersion
-		prior = list(
-			R = list(V = diag(1), nu = 0.002),
-			G = list(
-				G1 = list(V = diag(10), n = 10)
-			)
-		),
-		thin = 20,
-		burnin = 5000,
-		nitt = 50000,
-		verbose = FALSE,
-		pr = TRUE # needed to output the estimates/CIs for the random effects
-	)
-})
-
-write_rds(mcmc, "../analysis_data/mcmc.Rds")
-
-mcmc$robb$h3_full_gelman <- parallel::mclapply(1:4, function (i) {
-	message("Starting iteration ", i, appendLF = TRUE)
-	MCMCglmm::MCMCglmm(
-		fixed = count ~ count_lag_sc,
-		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
-										index_ethnic + perc_teen_sc + private_elementary_school +
-										public_elementary_school + private_secondary_school + 
-										public_secondary_school):city_location,
-		data = filter(as.data.frame(data_h3), crime_type == "robbery"),
-		family = "poisson", # MCMC deals with over-dispersion
-		prior = list(
-			R = list(V = diag(1), nu = 0.002),
-			G = list(
-				G1 = list(V = diag(10), n = 10)
-			)
-		),
-		thin = 20,
-		burnin = 5000,
-		nitt = 50000,
-		verbose = FALSE,
-		pr = TRUE # needed to output the estimates/CIs for the random effects
-	)
-})
-
-write_rds(mcmc, "../analysis_data/mcmc.Rds")
+write_rds(mcmc_h1, "../analysis_data/mcmc_h1.Rds")
 
 message("Finished processing data on ", now(), appendLF = TRUE)
 
-mcmc$robb$h3_full_gelman %>% 
+mcmc_h1$robb_full_gelman %>% 
 	map(function (x) x$Sol) %>% 
 	{ do.call(coda::mcmc.list, .) } %>% 
 	coda::gelman.diag() %>% 
 	as.list() %>% 
 	pluck("mpsrf")
-
-# gelman.plot()
 ```
+
 
 ```{r message=FALSE, warning=FALSE}
 tidyMCMC(mcmc$aslt$h1_full_3hour$Sol, conf.int = TRUE) %>% 
@@ -653,7 +602,8 @@ plot_labels <- c(
 			`school night` = " school weekday   \n 19:00–06:59"
 )
 
-plot_data <- as.tibble(mcmc$robb$h1_full_4period$Sol) %>% 
+plot_data <- pluck(mcmc_h1$robb_full, "Sol") %>% 
+	as.tibble() %>% 
 	gather() %>% 
 	separate(key, c("term", "city_period"), ".city_period.") %>% 
 	separate(city_period, c("city", "period"), coll(" - ")) %>%
@@ -662,7 +612,6 @@ plot_data <- as.tibble(mcmc$robb$h1_full_4period$Sol) %>%
 										 "public_elementary_schoolTRUE", 
 										 "private_secondary_schoolTRUE", 
 										 "public_secondary_schoolTRUE")) %>% 
-	filter(!city %in% c("Kansas City", "Virginia Beach")) %>% 
 	remove_missing(na.rm = TRUE) %>% 
 	mutate(
 		term = str_replace_all(str_sub(term, 0, -5), "_", " "),
@@ -801,13 +750,15 @@ each block group for each crime type, one for public crimes and one for private
 crimes.
 
 ```{r}
-mcmc$robb$h3_full <- MCMCglmm::MCMCglmm(
-	fixed = count ~ count_lag_sc,
-	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
-									index_ethnic + perc_teen_sc + private_elementary_school +
-									public_elementary_school + private_secondary_school + 
-									public_secondary_school):city_location,
-	data = filter(as.data.frame(data_h3), crime_type == "robbery"),
+mcmc_h3 <- read_rds("../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 assault empty}
+mcmc_h3$robb_empty <- MCMCglmm::MCMCglmm(
+	fixed = count ~ 1,
+	random = ~ us(1):city_period,
+	data = filter(as.data.frame(data_h3), crime_type == "assault"),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
@@ -823,8 +774,225 @@ mcmc$robb$h3_full <- MCMCglmm::MCMCglmm(
 
 paste("Finished processing data on", now())
 
-write_rds(mcmc, "../analysis_data/mcmc.Rds")
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
 
+
+```{r H3 assault control}
+mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
+	fixed = count ~ count_lag_sc,
+	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+									index_ethnic + perc_teen_sc):city_location,
+	data = filter(as.data.frame(data_h3), crime_type == "assault"),
+	family = "poisson", # MCMC deals with over-dispersion
+	prior = list(
+		R = list(V = diag(1), nu = 0.002),
+		G = list(
+			G1 = list(V = diag(10), n = 10)
+		)
+	),
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
+	pr = TRUE # needed to output the estimates/CIs for the random effects
+)
+
+paste("Finished processing data on", now())
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 assault full}
+mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
+	fixed = count ~ count_lag_sc,
+	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+									index_ethnic + perc_teen_sc + private_elementary_school +
+									public_elementary_school + private_secondary_school + 
+									public_secondary_school):city_location,
+	data = filter(as.data.frame(data_h3), crime_type == "assault"),
+	family = "poisson", # MCMC deals with over-dispersion
+	prior = list(
+		R = list(V = diag(1), nu = 0.002),
+		G = list(
+			G1 = list(V = diag(10), n = 10)
+		)
+	),
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
+	pr = TRUE # needed to output the estimates/CIs for the random effects
+)
+
+paste("Finished processing data on", now())
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 assault compare models}
+# this code from https://stackoverflow.com/a/31484507/8222654
+MuMIn::model.sel(mcmc_h3$aslt_empty, mcmc_h3$aslt_control, mcmc_h3$aslt_full, 
+								 rank = "DIC")
+```
+
+
+```{r H3 robbery empty}
+mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
+	fixed = count ~ 1,
+	random = ~ us(1):city_period,
+	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
+									!city_name %in% c("Kansas City", "Virginia Beach")),
+	family = "poisson", # MCMC deals with over-dispersion
+	prior = list(
+		R = list(V = diag(1), nu = 0.002),
+		G = list(
+			G1 = list(V = diag(10), n = 10)
+		)
+	),
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
+	pr = TRUE # needed to output the estimates/CIs for the random effects
+)
+
+paste("Finished processing data on", now())
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 robbery control}
+mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
+	fixed = count ~ count_lag_sc,
+	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+									index_ethnic + perc_teen_sc):city_location,
+	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
+									!city_name %in% c("Kansas City", "Virginia Beach")),
+	family = "poisson", # MCMC deals with over-dispersion
+	prior = list(
+		R = list(V = diag(1), nu = 0.002),
+		G = list(
+			G1 = list(V = diag(10), n = 10)
+		)
+	),
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
+	pr = TRUE # needed to output the estimates/CIs for the random effects
+)
+
+paste("Finished processing data on", now())
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 robbery full}
+mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
+	fixed = count ~ count_lag_sc,
+	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+									index_ethnic + perc_teen_sc + private_elementary_school +
+									public_elementary_school + private_secondary_school + 
+									public_secondary_school):city_location,
+	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
+									!city_name %in% c("Kansas City", "Virginia Beach")),
+	family = "poisson", # MCMC deals with over-dispersion
+	prior = list(
+		R = list(V = diag(1), nu = 0.002),
+		G = list(
+			G1 = list(V = diag(10), n = 10)
+		)
+	),
+	thin = 20,
+	burnin = 5000,
+	nitt = 50000,
+	pr = TRUE # needed to output the estimates/CIs for the random effects
+)
+
+paste("Finished processing data on", now())
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+```
+
+
+```{r H3 robbery compare models}
+# this code from https://stackoverflow.com/a/31484507/8222654
+MuMIn::model.sel(mcmc_h3$robb_empty, mcmc_h3$robb_control, mcmc_h3$robb_full, 
+								 rank = "DIC")
+```
+
+
+```{r H3 Gelman checks}
+
+mcmc_h3$aslt_full_gelman <- parallel::mclapply(1:4, function (i) {
+	message("Starting iteration ", i, appendLF = TRUE)
+	MCMCglmm::MCMCglmm(
+		fixed = count ~ count_lag_sc,
+		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+										index_ethnic + perc_teen_sc + private_elementary_school +
+										public_elementary_school + private_secondary_school + 
+										public_secondary_school):city_location,
+		data = filter(as.data.frame(data_h3), crime_type == "assault"),
+		family = "poisson", # MCMC deals with over-dispersion
+		prior = list(
+			R = list(V = diag(1), nu = 0.002),
+			G = list(
+				G1 = list(V = diag(10), n = 10)
+			)
+		),
+		thin = 20,
+		burnin = 5000,
+		nitt = 50000,
+		verbose = FALSE,
+		pr = TRUE # needed to output the estimates/CIs for the random effects
+	)
+})
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+
+mcmc_h3$aslt_full_gelman %>% 
+	map(function (x) x$Sol) %>% 
+	{ do.call(coda::mcmc.list, .) } %>% 
+	coda::gelman.diag() %>% 
+	as.list() %>% 
+	pluck("mpsrf")
+
+mcmc_h3$robb_full_gelman <- parallel::mclapply(1:4, function (i) {
+	message("Starting iteration ", i, appendLF = TRUE)
+	MCMCglmm::MCMCglmm(
+		fixed = count ~ count_lag_sc,
+		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
+										index_ethnic + perc_teen_sc + private_elementary_school +
+										public_elementary_school + private_secondary_school + 
+										public_secondary_school):city_location,
+		data = filter(as.data.frame(data_h3), crime_type == "robbery", 
+									!city_name %in% c("Kansas City", "Virginia Beach")),
+		family = "poisson", # MCMC deals with over-dispersion
+		prior = list(
+			R = list(V = diag(1), nu = 0.002),
+			G = list(
+				G1 = list(V = diag(10), n = 10)
+			)
+		),
+		thin = 20,
+		burnin = 5000,
+		nitt = 50000,
+		verbose = FALSE,
+		pr = TRUE # needed to output the estimates/CIs for the random effects
+	)
+})
+
+write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
+
+message("Finished processing data on ", now(), appendLF = TRUE)
+
+mcmc_h3$robb_full_gelman %>% 
+	map(function (x) x$Sol) %>% 
+	{ do.call(coda::mcmc.list, .) } %>% 
+	coda::gelman.diag() %>% 
+	as.list() %>% 
+	pluck("mpsrf")
 ```
 
 
@@ -837,7 +1005,8 @@ plot_labels <- c(
 			`public` = " public location   "
 )
 
-plot_data <- as.tibble(mcmc$robb$h3_full$Sol) %>%
+plot_data <- pluck(mcmc_h3$robb_full, "Sol") %>%
+	as.tibble() %>% 
 	gather() %>% 
 	separate(key, c("term", "city_location"), ".city_location.") %>% 
 	separate(city_location, c("city", "location"), coll(" - ")) %>%
@@ -926,7 +1095,7 @@ dist_plot <- plot_data %>%
 		legend.position = "bottom"
 	)
 
-plot_x_axis_lims <- ggplot_build(dist_plot)$layout$panel_params[[1]]
+# plot_x_axis_lims <- ggplot_build(dist_plot)$layout$panel_params[[1]]
 
 dist_plot
 
