@@ -755,7 +755,7 @@ mcmc_h3 <- read_rds("../analysis_data/mcmc_h3.Rds")
 
 
 ```{r H3 assault empty}
-mcmc_h3$robb_empty <- MCMCglmm::MCMCglmm(
+mcmc_h3$aslt_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
 	random = ~ us(1):city_location,
 	data = filter(as.data.frame(data_h3), crime_type == "assault"),
@@ -780,7 +780,7 @@ write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
 
 
 ```{r H3 assault control}
-mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
+mcmc_h3$aslt_control <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc):city_location,
@@ -806,7 +806,7 @@ write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
 
 
 ```{r H3 assault full}
-mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
+mcmc_h3$aslt_full <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc + private_elementary_school +
