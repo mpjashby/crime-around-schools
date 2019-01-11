@@ -14,6 +14,10 @@ easily reloaded after a restart.
 library("MASS")
 # multi-level models
 library("lme4")
+library("lmerTest")
+# MCMC multi-level models
+library("MCMCglmm")
+library("coda")
 # loading tidyverse loads ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr 
 # and forcats
 library("tidyverse")
