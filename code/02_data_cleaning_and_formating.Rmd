@@ -1199,6 +1199,7 @@ crime_data <- crime_data %>%
 		location_category %in% c("leisure", "open space", "retail", "street",
 														 "transportation") ~ "public",
 		location_category == "residence" ~ "private",
+		location_type %in% c("factory/warehouse", "office", "storage") ~ "private",
 		TRUE ~ "other"
 	)) %>% 
 	assert(in_set("public", "private", "other", allow.na = FALSE), 
@@ -1555,27 +1556,32 @@ school_data <- school_data %>%
 school_data <- school_data %>% 
 	st_join(blockgroup_outlines) %>% 
 	select(-area_land, -area_water)
+
+# remove pre-K and K schools, closed or future schools
+school_data <- school_data %>% 
+	st_set_geometry(NULL) %>% 
+	filter(
+		!school_level %in% c("Other", "Not known"),
+		!school_status %in% c("Closed", "Future School", "Inactive"),
+		!grade_max %in% c("PK", "KG")
+	) %>% 
+	mutate_at(vars("students", "staff", matches("^G\\d")), 
+						~ ifelse(. < 0 | is.na(.), 0, .))
+
+# save a copy of the school data for use in the manuscript
+write_rds(school_data, "../analysis_data/school_data.Rds")
 ```
 
 
 ## Calculate school and student counts
 
-At this stage we only include high schools and middle schools (i.e. 
+**!!** At this stage we only include high schools and middle schools (i.e. 
 approximately students aged 10 and over). We will exclude very-small schools 
 (fewer than 10 students).
 
 ```{r}
 # count schools and students in each block group
 school_counts <- school_data %>% 
-	st_set_geometry(NULL) %>% 
-	filter(
-		!school_level %in% c("Other", "Not known"),
-		!school_status %in% c("Closed", "Future School", "Inactive"),
-		!grade_max %in% c("PK", "KG"),
-		students > 10
-	) %>% 
-	mutate_at(vars("students", "staff", matches("^G\\d")), 
-						~ ifelse(. < 0 | is.na(.), 0, .)) %>% 
 	mutate(
 		blockgroup_id = paste0(state, county, census_tract, census_block_group),
   	# we can separate student counts into elementary/secondary schools, but note
