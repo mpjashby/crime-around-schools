@@ -389,10 +389,9 @@ blockgroup_outlines <- blockgroup_outlines %>%
 													perc_eth_other^2),
 	) %>% 
 	select(-perc_no_degree, -perc_poverty, -median_income, -perc_renters, 
-				 -perc_moved, -perc_teen, -perc_eth_white, -perc_eth_black, 
-				 -perc_eth_hispanic, -perc_eth_asian, -perc_eth_other,
-				 -perc_no_degree_sc, -perc_poverty_sc, -median_income_sc, 
-				 -perc_renters_sc, -perc_moved_sc) %>% 
+				 -perc_moved, -perc_eth_white, -perc_eth_black, -perc_eth_hispanic, 
+				 -perc_eth_asian, -perc_eth_other, -perc_no_degree_sc, -perc_poverty_sc, 
+				 -median_income_sc, -perc_renters_sc, -perc_moved_sc) %>% 
 	glimpse()
 
 rm(acs_data)

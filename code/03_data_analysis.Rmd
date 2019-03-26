@@ -28,7 +28,7 @@ The data are already in the required format because data cleaning has been done,
 so they can just be read directly from the RDS file.
 
 ```{r}
-data <- read_rds("../analysis_data/blockgroup_data.Rds") %>% 
+data <- read_rds(here::here("analysis_data/blockgroup_data.Rds")) %>% 
 	glimpse()
 ```
 
@@ -216,9 +216,8 @@ separate rows for offenses in public/private places.
 
 ```{r}
 data_h1 <- data %>% 
-	# mutate(city_name = ifelse(str_sub(geoid, 0, 5) == "36005", "Bronx", 
-	# 													city_name)) %>% 
-	filter(!city_name %in% c("Fort Worth")) %>%
+	filter(!city_name %in% c("Fort Worth") & school_time == TRUE) %>%
+	mutate_if(is.factor, fct_drop) %>% 
 	group_by(geoid, crime_type, period) %>% 
 	summarise(
 		count = sum(count),
@@ -374,7 +373,8 @@ MuMIn::model.sel(mcmc_h1$aslt_empty, mcmc_h1$aslt_control, mcmc_h1$aslt_full,
 mcmc_h1$robb_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
 	random = ~ us(1):city_period,
-	data = filter(as.data.frame(data_h1), crime_type == "robbery"),
+	data = filter(as.data.frame(data_h1), crime_type == "robbery", 
+								!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
@@ -400,7 +400,8 @@ mcmc_h1$robb_control <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc):city_period,
-	data = filter(as.data.frame(data_h1), crime_type == "robbery"),
+	data = filter(as.data.frame(data_h1), crime_type == "robbery", 
+								!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
 		R = list(V = diag(1), nu = 0.002),
@@ -520,7 +521,7 @@ write_rds(mcmc_h1, "../analysis_data/mcmc_h1.Rds")
 
 message("Finished processing data on ", now(), appendLF = TRUE)
 
-mcmc_h1$robb_full_gelman %>% 
+mcmc_h1$aslt_full_gelman %>% 
 	map(function (x) x$Sol) %>% 
 	{ do.call(coda::mcmc.list, .) } %>% 
 	coda::gelman.diag() %>% 
@@ -530,68 +531,196 @@ mcmc_h1$robb_full_gelman %>%
 
 
 ```{r message=FALSE, warning=FALSE}
-tidyMCMC(mcmc$aslt$h1_full_3hour$Sol, conf.int = TRUE) %>% 
-	mutate_if(is.numeric, exp) %>% 
-	separate(term, c("term", "city_period"), ".city_period.") %>% 
-	# mutate(city_period = str_replace(city_period, coll(" - "), "//")) %>%
+plot_data <- mcmc_h1$robb_full %>% 
+	tidy_draws() %>% 
+	mean_hdci() %>% 
+	gather(key = "variable", value = "value") %>% 
+	mutate(
+		stat = case_when(
+			str_sub(variable, -5) == "lower" ~ "lower_hdi",
+			str_sub(variable, -5) == "upper" ~ "upper_hdi",
+			TRUE ~ "mean"
+		),
+		variable = ifelse(
+			str_sub(variable, -5) %in% c("lower", "upper"),
+			str_sub(variable, 0, -7),
+			variable
+		)
+	) %>% 
+	spread(stat, value) %>% 
+	separate(variable, c("term", "city_period"), ".city_period.") %>% 
 	separate(city_period, c("city", "period"), coll(" - ")) %>%
-	separate(period, c("day", "time"), coll(" day ")) %>% 
+	# filter(!str_detect(term, coll("VCV_"))) %>% 
 	filter(term %in% c("private_elementary_schoolTRUE",
 										 "public_elementary_schoolTRUE", 
 										 "private_secondary_schoolTRUE", 
 										 "public_secondary_schoolTRUE")) %>% 
-	mutate(
-		sig = ifelse(
-			estimate > 1,
-			ifelse(conf.low > 1, day, "non-sig"),
-			ifelse(conf.high < 1, day, "non-sig")
-		),
-		term = str_replace_all(str_sub(term, 0, -5), "_", " ")
-	) %>% 
+	mutate_at(vars(one_of("mean", "lower_hdi", "upper_hdi")), as.numeric) %>% 
+	mutate_at(vars(one_of("mean", "lower_hdi", "upper_hdi")), exp) %>% 
 	remove_missing(na.rm = TRUE) %>% 
-	# mutate_if(is.character, factor) %>%
-	# summary()
-	ggplot(aes(x = time, colour = day)) +
-	# geom_vline(xintercept = "08:00–08:59", colour = "#CCCCCC") +
-	# geom_pointrange() is used here because geom_segment doesn't support vertical
-	# dodging. The point is suppressed by setting fatten = 0 because the point
-	# will be rendered separately with two calls to geom_point()
-	geom_pointrange(aes(ymin = 1, y = 1, ymax = conf.low),
-									position = position_dodge(width = 0.7), fatten = 0,
-									linetype = "32", size = 0.25, alpha = 0.5) +
-	geom_hline(yintercept = 1) +
-	geom_pointrange(aes(ymin = conf.low, y = estimate, ymax = conf.high),
-							 position = position_dodge(width = 0.7), fatten = 0) +
-	# the first point represents significance using fill
-	geom_point(aes(y = estimate, fill = sig), shape = 21,
-						 position = position_dodge(width = 0.7)) +
-	# the second point represents school/non-school day using the outline colour
-	geom_point(aes(y = estimate), fill = NA, shape = 21,
-						 position = position_dodge(width = 0.7)) +
-	# geom_pointrange(position = position_dodge(width = 0.3), shape = 21,
-	# 								fatten = 1.5) +
-	scale_x_discrete(position = "top") +
-	scale_y_continuous(trans = "log", expand = c(0, 0), 
-										 labels = scales::number_format(accuracy = 0.1)) +
+	arrange(city, term, period) %>% 
+	mutate(
+		diff = ifelse(
+			!is.na(lag(term)) & lag(term) == term,
+			ifelse(
+				lag(mean) > mean,
+				ifelse(lag(lower_hdi) > upper_hdi, TRUE, FALSE),
+				ifelse(lag(upper_hdi) < lower_hdi, TRUE, FALSE)
+			),
+			ifelse(
+				lead(mean) > mean,
+				ifelse(lead(lower_hdi) > upper_hdi, TRUE, FALSE),
+				ifelse(lead(upper_hdi) < lower_hdi, TRUE, FALSE)
+			)
+		),
+		label = ifelse(
+			period == "school day school time", 
+			paste0(format(mean, digits = 2), "\n"), 
+			""
+		),
+		min = ifelse(mean > 1, lower_hdi, upper_hdi),
+		period = str_remove(period, " school time$"),
+		sig = ifelse(
+			mean > 1,
+			ifelse(lower_hdi > 1, TRUE, FALSE),
+			ifelse(upper_hdi < 1, TRUE, FALSE)
+		),
+		sig = case_when(
+			diff == TRUE & sig == TRUE ~ "diff sig",
+			diff == TRUE & sig == FALSE ~ "diff non-sig",
+			diff == FALSE & sig == TRUE ~ "same sig",
+			diff == FALSE & sig == FALSE ~ "same non-sig",
+			TRUE ~ NA_character_
+		),
+		term = str_replace(str_replace_all(str_sub(term, 0, -5), "_", " "), 
+											 "^(\\w+?) (.+)$", "\\2, \\1")
+	)
+
+plot_cities <- plot_data %>% 
+	filter(term == "secondary school, public" & period == "school day") %>%
+	arrange(desc(mean)) %>%
+	pluck("city")
+
+plot_data %>% 
+	mutate(city = factor(city, levels = plot_cities)) %>% 
+  ggplot() + 
+	geom_segment(aes(x = period, xend = period, y = 1, yend = min), 
+							 colour = "#999999", linetype = "12") +
+	geom_hline(yintercept = 1, colour = "grey60", size = 0.25) +
+	geom_segment(aes(x = period, xend = period, y = lower_hdi, yend = upper_hdi, 
+											colour = sig)) +
+	geom_point(aes(x = period, y = mean, colour = sig, fill = sig), shape = 21, 
+						 size = 2.5) +
+	geom_text(aes(x = period, y = mean, label = label), lineheight = 0.9, 
+						size = 2.5, vjust = "bottom") +
+	scale_y_continuous(expand = c(0, 0), trans = "log", 
+										 limits = c(1/3.3333, 3.33333), breaks = c(0.5, 1.0, 2.0)) +
 	scale_colour_manual(
-		values = c("#666666", "#000000")
+		values = c(
+			"diff sig" = "#000000",
+			"diff non-sig" = "#999999",
+			"same sig" = "#000000",
+			"same non-sig" = "#999999"
+		),
+		labels = c(
+			"diff sig" = "different from intercept and from other period  ",
+			"diff non-sig" = "different from other period but not from intercept  ",
+			"same sig" = "different from intercept but not from other period  ",
+			"same non-sig" = "not different from intercept and not from other period  "
+		),
+		guide = guide_legend(nrow = 2)
 	) +
 	scale_fill_manual(
-		values = c("non-school" = "#666666", "school" = "#000000", 
-							 "non-sig" = "#FFFFFF")
+		values = c(
+			"diff sig" = "#000000",
+			"diff non-sig" = "#999999",
+			"same sig" = "#FFFFFF",
+			"same non-sig" = "#FFFFFF"
+		),
+		labels = c(
+			"diff sig" = "different from intercept and from other period  ",
+			"diff non-sig" = "different from other period but not from intercept  ",
+			"same sig" = "different from intercept but not from other period  ",
+			"same non-sig" = "not different from intercept and not from other period  "
+		)
 	) +
-	# scale_linetype_manual(values = c("dashed", "solid")) +
+	labs(y = "odds ratio (natural log scale)") +
+	facet_grid(rows = vars(city), cols = vars(term)) +
 	coord_flip() +
-	facet_grid(rows = vars(city), cols = vars(term), switch = "y") +
 	theme_minimal() +
 	theme(
-		axis.title = element_blank(),
-		axis.ticks = element_line(colour = "grey92"),
-		panel.grid.major.y = element_blank(),
-		panel.grid.minor.y = element_blank(),
+		axis.ticks.x = element_line(colour = "grey92"),
+		axis.title.y = element_blank(),
+		# axis.text.y = element_blank(),
+		panel.grid.major = element_blank(),
+		panel.grid.minor = element_blank(),
 		strip.text.y = element_text(angle = -90),
+		legend.title = element_blank(),
 		legend.position = "bottom"
 	)
+
+# tidyMCMC(mcmc$aslt$h1_full_3hour$Sol, conf.int = TRUE) %>% 
+# 	mutate_if(is.numeric, exp) %>% 
+# 	separate(term, c("term", "city_period"), ".city_period.") %>% 
+# 	# mutate(city_period = str_replace(city_period, coll(" - "), "//")) %>%
+# 	separate(city_period, c("city", "period"), coll(" - ")) %>%
+# 	separate(period, c("day", "time"), coll(" day ")) %>% 
+# 	filter(term %in% c("private_elementary_schoolTRUE",
+# 										 "public_elementary_schoolTRUE", 
+# 										 "private_secondary_schoolTRUE", 
+# 										 "public_secondary_schoolTRUE")) %>% 
+# 	mutate(
+# 		sig = ifelse(
+# 			estimate > 1,
+# 			ifelse(conf.low > 1, day, "non-sig"),
+# 			ifelse(conf.high < 1, day, "non-sig")
+# 		),
+# 		term = str_replace_all(str_sub(term, 0, -5), "_", " ")
+# 	) %>% 
+# 	remove_missing(na.rm = TRUE) %>% 
+# 	# mutate_if(is.character, factor) %>%
+# 	# summary()
+# 	ggplot(aes(x = time, colour = day)) +
+# 	# geom_vline(xintercept = "08:00–08:59", colour = "#CCCCCC") +
+# 	# geom_pointrange() is used here because geom_segment doesn't support vertical
+# 	# dodging. The point is suppressed by setting fatten = 0 because the point
+# 	# will be rendered separately with two calls to geom_point()
+# 	geom_pointrange(aes(ymin = 1, y = 1, ymax = conf.low),
+# 									position = position_dodge(width = 0.7), fatten = 0,
+# 									linetype = "32", size = 0.25, alpha = 0.5) +
+# 	geom_hline(yintercept = 1) +
+# 	geom_pointrange(aes(ymin = conf.low, y = estimate, ymax = conf.high),
+# 							 position = position_dodge(width = 0.7), fatten = 0) +
+# 	# the first point represents significance using fill
+# 	geom_point(aes(y = estimate, fill = sig), shape = 21,
+# 						 position = position_dodge(width = 0.7)) +
+# 	# the second point represents school/non-school day using the outline colour
+# 	geom_point(aes(y = estimate), fill = NA, shape = 21,
+# 						 position = position_dodge(width = 0.7)) +
+# 	# geom_pointrange(position = position_dodge(width = 0.3), shape = 21,
+# 	# 								fatten = 1.5) +
+# 	scale_x_discrete(position = "top") +
+# 	scale_y_continuous(trans = "log", expand = c(0, 0), 
+# 										 labels = scales::number_format(accuracy = 0.1)) +
+# 	scale_colour_manual(
+# 		values = c("#666666", "#000000")
+# 	) +
+# 	scale_fill_manual(
+# 		values = c("non-school" = "#666666", "school" = "#000000", 
+# 							 "non-sig" = "#FFFFFF")
+# 	) +
+# 	# scale_linetype_manual(values = c("dashed", "solid")) +
+# 	coord_flip() +
+# 	facet_grid(rows = vars(city), cols = vars(term), switch = "y") +
+# 	theme_minimal() +
+# 	theme(
+# 		axis.title = element_blank(),
+# 		axis.ticks = element_line(colour = "grey92"),
+# 		panel.grid.major.y = element_blank(),
+# 		panel.grid.minor.y = element_blank(),
+# 		strip.text.y = element_text(angle = -90),
+# 		legend.position = "bottom"
+# 	)
 ```
 
 ```{r H1 distribution chart, fig.height=9.21, fig.width=6.85}
@@ -740,7 +869,7 @@ data_h3 <- data %>%
 	) %>% 
 	mutate(
 		count_lag_sc = as.numeric(scale(count_lag, center = TRUE, scale = TRUE)),
-		city_location = as.factor(paste0(city_name, " - ", public_location))
+		city_period = as.factor(paste0(city_name, " - ", public_location))
 	) %>% 
 	glimpse()
 ```
@@ -760,7 +889,7 @@ mcmc_h3 <- read_rds("../analysis_data/mcmc_h3.Rds")
 ```{r H3 assault empty}
 mcmc_h3$aslt_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
-	random = ~ us(1):city_location,
+	random = ~ us(1):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "assault"),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
@@ -786,7 +915,7 @@ write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
 mcmc_h3$aslt_control <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
-									index_ethnic + perc_teen_sc):city_location,
+									index_ethnic + perc_teen_sc):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "assault"),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
@@ -814,7 +943,7 @@ mcmc_h3$aslt_full <- MCMCglmm::MCMCglmm(
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc + private_elementary_school +
 									public_elementary_school + private_secondary_school + 
-									public_secondary_school):city_location,
+									public_secondary_school):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "assault"),
 	family = "poisson", # MCMC deals with over-dispersion
 	prior = list(
@@ -846,7 +975,7 @@ MuMIn::model.sel(mcmc_h3$aslt_empty, mcmc_h3$aslt_control, mcmc_h3$aslt_full,
 ```{r H3 robbery empty}
 mcmc_h3$robb_empty <- MCMCglmm::MCMCglmm(
 	fixed = count ~ 1,
-	random = ~ us(1):city_location,
+	random = ~ us(1):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
 									!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
@@ -873,7 +1002,7 @@ write_rds(mcmc_h3, "../analysis_data/mcmc_h3.Rds")
 mcmc_h3$robb_control <- MCMCglmm::MCMCglmm(
 	fixed = count ~ count_lag_sc,
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
-									index_ethnic + perc_teen_sc):city_location,
+									index_ethnic + perc_teen_sc):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
 									!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
@@ -902,7 +1031,7 @@ mcmc_h3$robb_full <- MCMCglmm::MCMCglmm(
 	random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 									index_ethnic + perc_teen_sc + private_elementary_school +
 									public_elementary_school + private_secondary_school + 
-									public_secondary_school):city_location,
+									public_secondary_school):city_period,
 	data = filter(as.data.frame(data_h3), crime_type == "robbery", 
 									!city_name %in% c("Kansas City", "Virginia Beach")),
 	family = "poisson", # MCMC deals with over-dispersion
@@ -941,7 +1070,7 @@ mcmc_h3$aslt_full_gelman <- parallel::mclapply(1:4, function (i) {
 		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 										index_ethnic + perc_teen_sc + private_elementary_school +
 										public_elementary_school + private_secondary_school + 
-										public_secondary_school):city_location,
+										public_secondary_school):city_period,
 		data = filter(as.data.frame(data_h3), crime_type == "assault"),
 		family = "poisson", # MCMC deals with over-dispersion
 		prior = list(
@@ -974,7 +1103,7 @@ mcmc_h3$robb_full_gelman <- parallel::mclapply(1:4, function (i) {
 		random = ~ us(1 + pop_total_sc + index_disadvantage + index_mobility + 
 										index_ethnic + perc_teen_sc + private_elementary_school +
 										public_elementary_school + private_secondary_school + 
-										public_secondary_school):city_location,
+										public_secondary_school):city_period,
 		data = filter(as.data.frame(data_h3), crime_type == "robbery", 
 									!city_name %in% c("Kansas City", "Virginia Beach")),
 		family = "poisson", # MCMC deals with over-dispersion
@@ -1132,6 +1261,8 @@ data_h4 <- data_h1 %>%
 
 ```
 
+
+## Testing H4
 
 ```{r}
 mcmc_h4 <- read_rds("../analysis_data/mcmc_h4.Rds")
@@ -1365,7 +1496,7 @@ write_rds(mcmc_h4, "../analysis_data/mcmc_h4.Rds")
 
 message("Finished processing data on ", now(), appendLF = TRUE)
 
-mcmc_h4$aslt_full_gelman %>% 
+mcmc_h4$robb_full_gelman %>% 
 	map(function (x) x$Sol) %>% 
 	{ do.call(coda::mcmc.list, .) } %>% 
 	coda::gelman.diag() %>% 
@@ -1479,3 +1610,57 @@ dist_plot
 
 # rm(plot_cities, plot_data, plot_labels, plot_means)
 ```
+
+
+# Predict crime counts
+
+
+```{r}
+newdata <- expand.grid(
+	count = 0,
+	# since all the control variables were centered and scaled, they can be set to
+	# zero here to represent block groups with the mean values
+	count_lag_sc = 0,
+	pop_total_sc = 0,
+	perc_teen_sc = 0,
+	index_disadvantage = 0,
+	index_mobility = 0,
+	# the ethnic heterogeneity index is not centered or scaled, so a value of 0.5
+	# is used because it approximately represents the mean value across cities
+	index_ethnic = 0.5,
+	# since we know there is only a meaningful effect for public secondary 
+	# schools, we can set all the other school indicators to FALSE
+	private_elementary_school = FALSE,
+	public_elementary_school = FALSE,
+	private_secondary_school = FALSE,
+	public_secondary_school = c(FALSE, TRUE),
+	# public_elementary_students_sc = 0,
+	# public_secondary_students_sc = seq(0, 100, by = 10),
+	# since we're interested in comparing block groups with and without schools,
+	# we only need to get predictions for school times on school days
+	city_period = c(
+		"Chicago - non-school day school time",
+		"Chicago - school day school time", 
+		"Detroit - non-school day school time",
+		"Detroit - school day school time",
+		"Kansas City - non-school day school time",
+		"Kansas City - school day school time",
+		"Los Angeles - non-school day school time",
+		"Los Angeles - school day school time",
+		"Louisville - non-school day school time",
+		"Louisville - school day school time",
+		"New York - non-school day school time",
+		"New York - school day school time",
+		"San Francisco - non-school day school time",
+		"San Francisco - school day school time",
+		"Tucson - non-school day school time",
+		"Tucson - school day school time",
+		"Virginia Beach - non-school day school time",
+		"Virginia Beach - school day school time"
+	)
+)
+
+predictions <- predict(mcmc_h1$aslt_full, newdata = newdata, marginal = NULL, 
+											 type = "response", posterior = "mean", verbose = TRUE)
+```
+
